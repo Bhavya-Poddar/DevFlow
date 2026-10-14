@@ -1,0 +1,35 @@
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+**/application-local.properties
+**/application-prod.properties
+secrets/
+*.pem
+*.key
+
+# Java / Maven
+backend/target/
+backend/.classpath
+backend/.project
+backend/.settings/
+
+# Node / React
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local database dumps and backups
+*.bak
+*.dump
+*.db
+recovery-snapshot-*/

@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+/* The existing screens use fixed dark Tailwind utilities. Re-map their neutral
+   surfaces and text in light mode while leaving the dark palette untouched. */
+html[data-theme="light"] {
+  color-scheme: light;
+  background: #f3f6fb;
+}
+
+html[data-theme="light"] body {
+  background: #f3f6fb;
+  color: #172033;
+}
+
+html[data-theme="light"] .bg-gray-950,
+html[data-theme="light"] [class~="bg-gray-950/95"] {
+  background-color: #f3f6fb !important;
+}
+
+html[data-theme="light"] .bg-gray-900,
+html[data-theme="light"] [class~="bg-gray-900/95"] {
+  background-color: #ffffff !important;
+}
+
+html[data-theme="light"] .bg-gray-800,
+html[data-theme="light"] .bg-gray-700,
+html[data-theme="light"] [class~="bg-gray-800/60"],
+html[data-theme="light"] [class~="bg-gray-800/50"],
+html[data-theme="light"] [class~="bg-gray-800/30"],
+html[data-theme="light"] [class~="bg-gray-800/70"] {
+  background-color: #f1f5f9 !important;
+}
+
+html[data-theme="light"] [class~="bg-gray-950/60"] {
+  background-color: #f8fafc !important;
+}
+
+html[data-theme="light"] [class~="bg-gray-500/10"] {
+  background-color: #f1f5f9 !important;
+}
+
+html[data-theme="light"] .bg-gray-500 {
+  background-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .border-gray-900,
+html[data-theme="light"] .border-gray-800,
+html[data-theme="light"] [class~="border-gray-800/70"] {
+  border-color: #e2e8f0 !important;
+}
+
+html[data-theme="light"] .border-gray-700 {
+  border-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] [class~="border-gray-500/20"] {
+  border-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .text-white {
+  color: #172033 !important;
+}
+
+html[data-theme="light"] .bg-blue-600.text-white,
+html[data-theme="light"] .bg-blue-500.text-white,
+html[data-theme="light"] .bg-red-600.text-white,
+html[data-theme="light"] .bg-red-500.text-white,
+html[data-theme="light"] .bg-emerald-600.text-white {
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] .text-gray-200,
+html[data-theme="light"] .text-gray-300 {
+  color: #334155 !important;
+}
+
+html[data-theme="light"] .text-gray-400 {
+  color: #475569 !important;
+}
+
+html[data-theme="light"] .text-gray-500,
+html[data-theme="light"] .text-gray-600 {
+  color: #64748b !important;
+}
+
+html[data-theme="light"] [class~="from-gray-900"] {
+  --tw-gradient-from: #ffffff var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(255 255 255 / 0) var(--tw-gradient-to-position) !important;
+}
+
+html[data-theme="light"] [class~="to-gray-900/70"] {
+  --tw-gradient-to: #f8fafc var(--tw-gradient-to-position) !important;
+}
+
+html[data-theme="light"] input:not([type="checkbox"]),
+html[data-theme="light"] textarea,
+html[data-theme="light"] select {
+  color: #172033;
+}
+
+html[data-theme="light"] input::placeholder,
+html[data-theme="light"] textarea::placeholder {
+  color: #94a3b8;
+}
+
+html[data-theme="light"] .hover\:bg-gray-800:hover,
+html[data-theme="light"] .hover\:bg-gray-700:hover,
+html[data-theme="light"] [class~="hover:bg-gray-800/50"]:hover,
+html[data-theme="light"] [class~="hover:bg-gray-800/30"]:hover {
+  background-color: #e8eef6 !important;
+}
+
+html[data-theme="light"] .hover\:text-white:hover {
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .divide-gray-800 > :not(:last-child) {
+  border-color: #e2e8f0 !important;
+}
