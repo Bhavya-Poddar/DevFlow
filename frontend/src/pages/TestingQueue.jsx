@@ -1,8 +1,9 @@
+import { apiUrl } from "../services/apiConfig";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { responseErrorMessage } from "../utils/responseError";
 
-const API = "http://localhost:8080/api";
+const API = apiUrl("/api");
 const uniqueById = issues => [...new Map(issues.filter(issue => issue?.id != null).map(issue => [String(issue.id), issue])).values()];
 const valueName = value => typeof value === "string" ? value : value?.name || value?.username || "Unassigned";
 const dateLabel = value => value && !Number.isNaN(new Date(value).getTime())
@@ -45,11 +46,11 @@ export default function TestingQueue() {
                 fetch(`${API}/testing/queue`, { headers }),
                 fetch(`${API}/issues`, { headers })
             ]);
-            if (!queueResponse.ok) throw new Error(await responseErrorMessage(queueResponse, "Could not load issues needing testing."));
-            if (!issuesResponse.ok) throw new Error(await responseErrorMessage(issuesResponse, "Could not load active testing issues."));
+            if (!queueResponse.ok) throw new Error(await responseErrorMessage(queueResponse, "Could not load tasks needing testing."));
+            if (!issuesResponse.ok) throw new Error(await responseErrorMessage(issuesResponse, "Could not load active testing tasks."));
             const [queueData, issueData] = await Promise.all([queueResponse.json(), issuesResponse.json()]);
             if (!Array.isArray(queueData)) throw new Error("The testing queue response was not a JSON array.");
-            if (!Array.isArray(issueData)) throw new Error("The issue list response was not a JSON array.");
+            if (!Array.isArray(issueData)) throw new Error("The task list response was not a JSON array.");
             setNeedsTesting(uniqueById(queueData.filter(issue => issue?.status === "READY_FOR_TESTING")));
             setCurrentlyTesting(uniqueById(issueData.filter(issue => issue?.status === "TESTING")));
         } catch (reason) {
@@ -66,12 +67,12 @@ export default function TestingQueue() {
         void Promise.resolve().then(() => load({ initial: true }));
     }, [load]);
 
-    return <main className="mx-auto max-w-7xl space-y-6">
-        <header className="flex flex-wrap items-end justify-between gap-4">
+    return <main className="dfx-screen dfx-screen--testing-queue mx-auto max-w-7xl space-y-6">
+        <header className="dfx-screen-header flex flex-wrap items-end justify-between gap-4">
             <div>
                 <p className="text-sm font-semibold uppercase tracking-wide text-blue-400">TESTING WORKSPACE</p>
                 <h1 className="mt-2 text-3xl font-bold text-white">Testing Queue</h1>
-                <p className="mt-2 text-gray-400">Track issues waiting for testing and tests already underway.</p>
+                <p className="mt-2 text-gray-400">Track tasks waiting for testing and tests already underway.</p>
             </div>
             <button type="button" onClick={() => void load()} disabled={refreshing || loading} className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200 hover:bg-gray-800 disabled:opacity-50">
                 {refreshing ? "Refreshing…" : "Refresh"}
@@ -79,7 +80,7 @@ export default function TestingQueue() {
         </header>
         {error && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">{error}</p>}
         {loading ? <p className="text-gray-400">Loading testing queue…</p> : <div className="grid gap-6 xl:grid-cols-2">
-            <Section title="Needs Testing" empty="No issues are waiting for testing." issues={needsTesting} />
+            <Section title="Needs Testing" empty="No tasks are waiting for testing." issues={needsTesting} />
             <Section title="Currently Testing" empty="No tests are currently underway." issues={currentlyTesting} />
         </div>}
     </main>;
@@ -89,7 +90,7 @@ function Section({ title, empty, issues }) {
     return <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
         <div className="mb-4 flex items-center justify-between"><h2 className="text-lg font-semibold text-white">{title}</h2><span className="rounded-full bg-gray-800 px-2.5 py-1 text-xs text-gray-300">{issues.length}</span></div>
         {issues.length === 0 ? <p className="rounded-lg border border-dashed border-gray-700 p-6 text-sm text-gray-500">{empty}</p> : <div className="space-y-3">{issues.map(issue => <article key={issue.id} className="rounded-lg border border-gray-800 bg-gray-950 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><Link to={`/testing/${issue.id}`} className="font-medium text-white hover:text-blue-400">{issue.title || `Issue #${issue.id}`}</Link><p className="mt-1 text-xs text-gray-500">Issue #{issue.id}</p></div><span className="rounded-full bg-yellow-500/10 px-3 py-1 text-xs font-medium text-yellow-300">{String(issue.status || "Unknown").replaceAll("_", " ")}</span></div>
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><Link to={`/testing/${issue.id}`} className="font-medium text-white hover:text-blue-400">{issue.title || `Task #${issue.id}`}</Link><p className="mt-1 text-xs text-gray-500">Task #{issue.id}</p></div><span className="rounded-full bg-yellow-500/10 px-3 py-1 text-xs font-medium text-yellow-300">{String(issue.status || "Unknown").replaceAll("_", " ")}</span></div>
             {issue.description && <p className="mt-3 line-clamp-3 text-sm text-gray-400">{issue.description}</p>}
             <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
                 <Field label="Project" value={valueName(issue.projectName || issue.project)} />

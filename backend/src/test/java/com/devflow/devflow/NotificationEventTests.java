@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doAnswer;
 
 import java.util.Optional;
 
@@ -32,6 +33,11 @@ import com.devflow.devflow.service.AuditLogServices;
 import com.devflow.devflow.service.CommentService;
 import com.devflow.devflow.service.IssueService;
 import com.devflow.devflow.service.NotificationService;
+import com.devflow.devflow.service.AutomationEventService;
+import com.devflow.devflow.service.ProjectAccessService;
+import com.devflow.devflow.service.EffectivePermissionService;
+import org.junit.jupiter.api.BeforeEach;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class NotificationEventTests {
@@ -42,22 +48,61 @@ class NotificationEventTests {
     @Mock private UserRepository userRepository;
     @Mock private AuditLogServices auditLogService;
     @Mock private NotificationService notificationService;
+    @Mock private AutomationEventService automationEventService;
     @Mock private CommentRepository commentRepository;
+    @Mock private ProjectAccessService projectAccessService;
+    @Mock private EffectivePermissionService permissions;
 
     @InjectMocks private IssueService issueService;
     @InjectMocks private CommentService commentService;
+
+    private final java.util.Map<String, String> roleByEmail = new java.util.HashMap<>();
+
+    @BeforeEach
+    void injectAuthorizationCollaborators() {
+        ReflectionTestUtils.setField(issueService, "permissions", projectPermissionService());
+        ReflectionTestUtils.setField(issueService, "projectAccessService", projectAccessService);
+        ReflectionTestUtils.setField(commentService, "permissions", projectPermissionService());
+        ReflectionTestUtils.setField(commentService, "projectAccessService", projectAccessService);
+        org.mockito.Mockito.lenient().when(permissions.has(any(), any(),
+                org.mockito.ArgumentMatchers.nullable(Long.class), org.mockito.ArgumentMatchers.nullable(Long.class)))
+            .thenAnswer(call -> allowed(call.getArgument(0), call.getArgument(1)));
+        org.mockito.Mockito.lenient().when(permissions.hasGlobal(any(), any()))
+            .thenAnswer(call -> allowed(call.getArgument(0), call.getArgument(1)));
+        org.mockito.Mockito.lenient().doAnswer(call -> {
+            if (!allowed(call.getArgument(0), call.getArgument(1))) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "Required permission is not granted");
+            }
+            return null;
+        }).when(permissions).require(any(), any(), org.mockito.ArgumentMatchers.nullable(Long.class),
+            org.mockito.ArgumentMatchers.nullable(Long.class));
+    }
+
+    private EffectivePermissionService projectPermissionService() { return permissions; }
+
+    private boolean allowed(String email, String permission) {
+        String role = roleByEmail.get(email);
+        if ("ADMIN".equals(role)) return true;
+        if ("PROJECT_MANAGER".equals(role)) return !"TESTING_OVERRIDE".equals(permission);
+        if ("DEVELOPER".equals(role)) return java.util.List.of("ISSUE_CREATE", "ISSUE_UPDATE",
+            "ISSUE_UPDATE_ASSIGNED", "ISSUE_STATUS_ADVANCE", "COMMENT_CREATE", "ASSIGNABLE_DEVELOPER")
+            .contains(permission);
+        return false;
+    }
 
     @Test
     void issueAssignmentCreatesNotificationForNewAssignee() {
         User actor = user(1L, "manager@example.com", "PROJECT_MANAGER");
         User assignee = user(2L, "developer@example.com", "DEVELOPER");
         when(userRepository.findByEmail(actor.getEmail())).thenReturn(Optional.of(actor));
+        when(permissions.hasGlobal(assignee.getEmail(), "ASSIGNABLE_DEVELOPER")).thenReturn(true);
         when(userRepository.findById(2L)).thenReturn(Optional.of(assignee));
         when(issueRepository.save(any(Issue.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         issueService.createIssue(issueCreateRequest("Fix login bug", 2L), actor.getEmail());
 
-        verify(notificationService).createNotification(assignee, "ISSUE_ASSIGNED", "You were assigned issue 'Fix login bug'");
+        verify(notificationService).createNotification(assignee, "ISSUE_ASSIGNED", "You were assigned task 'Fix login bug'", null);
     }
 
     @Test
@@ -74,12 +119,12 @@ class NotificationEventTests {
         when(issueRepository.save(any(Issue.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         issueService.updateIssue(11L, updateRequest("Fix login bug", assignee, "IN_PROGRESS"), actor.getEmail());
-        verify(notificationService).createNotification(assignee, "ISSUE_STATUS_CHANGED",
-            "Issue 'Fix login bug' changed status to IN_PROGRESS");
+        verify(notificationService).notifyIssueParticipants(eq(existing), eq(actor), eq("ISSUE_STATUS_CHANGED"),
+            eq("Task 'Fix login bug' changed status to IN_PROGRESS."), eq("/issues?issueId=11"));
 
         org.mockito.Mockito.clearInvocations(notificationService);
         issueService.updateIssue(11L, updateRequest("Fix login bug", assignee, "IN_PROGRESS"), actor.getEmail());
-        verify(notificationService, never()).createNotification(eq(assignee), eq("ISSUE_STATUS_CHANGED"), any());
+        verify(notificationService, never()).notifyIssueParticipants(any(), any(), eq("ISSUE_STATUS_CHANGED"), any(), any());
     }
 
     @Test
@@ -97,7 +142,7 @@ class NotificationEventTests {
 
         issueService.updateIssue(11L, updateRequest("Fix login bug", assignee, "OPEN"), actor.getEmail());
 
-        verify(notificationService, never()).createNotification(eq(assignee), eq("ISSUE_ASSIGNED"), any());
+        verify(notificationService, never()).createNotification(eq(assignee), eq("ISSUE_ASSIGNED"), any(), any());
     }
 
     @Test
@@ -113,8 +158,8 @@ class NotificationEventTests {
 
         commentService.createComment(comment, author.getEmail());
 
-        verify(notificationService).createNotification(assignee, "COMMENT_ADDED",
-            "New comment added to issue 'Fix login bug'");
+        verify(notificationService).notifyIssueParticipants(eq(issue), eq(author), eq("COMMENT_ADDED"),
+            eq("author@example.com commented on task 'Fix login bug'."), eq("/issues?issueId=11"));
 
         org.mockito.Mockito.clearInvocations(notificationService);
         when(userRepository.findByEmail(assignee.getEmail())).thenReturn(Optional.of(assignee));
@@ -122,7 +167,8 @@ class NotificationEventTests {
 
         commentService.createComment(ownComment, assignee.getEmail());
 
-        verify(notificationService, never()).createNotification(any(), eq("COMMENT_ADDED"), any());
+        verify(notificationService).notifyIssueParticipants(eq(issue), eq(assignee), eq("COMMENT_ADDED"),
+            eq("assignee@example.com commented on task 'Fix login bug'."), eq("/issues?issueId=11"));
     }
 
     @Test
@@ -211,6 +257,7 @@ class NotificationEventTests {
         user.setEmail(email);
         user.setName(email);
         user.setRole(role);
+        roleByEmail.put(email, role);
         return user;
     }
 }

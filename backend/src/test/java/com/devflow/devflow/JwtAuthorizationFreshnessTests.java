@@ -159,6 +159,7 @@ class JwtAuthorizationFreshnessTests {
         user.setName(email);
         user.setPassword("not-used-by-auth-filter");
         user.setRole(role);
+        if ("ADMIN".equals(role)) user.setAdminRecovery(true);
         return userRepository.saveAndFlush(user);
     }
 

@@ -2,12 +2,11 @@ package com.devflow.devflow;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.util.List;
 import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
@@ -18,108 +17,64 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.test.util.ReflectionTestUtils;
 
+import com.devflow.devflow.entity.AuthorizationRole;
+import com.devflow.devflow.entity.PermissionScope;
 import com.devflow.devflow.entity.User;
+import com.devflow.devflow.repository.AuthorizationRoleRepository;
 import com.devflow.devflow.repository.UserRepository;
 import com.devflow.devflow.service.AuditLogServices;
+import com.devflow.devflow.service.RoleManagementService;
 import com.devflow.devflow.service.UserService;
 
+/** Compatibility coverage for the legacy user-role API, which now delegates to dynamic role assignments. */
 @ExtendWith(MockitoExtension.class)
 class UserRoleManagementTests {
-
     @Mock private UserRepository userRepository;
+    @Mock private AuthorizationRoleRepository authorizationRoleRepository;
+    @Mock private RoleManagementService roleManagementService;
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private AuditLogServices auditLogService;
-
     @InjectMocks private UserService userService;
 
     @Test
-    void adminCanPromoteViewerToDeveloper() {
-        assertPromotesTo("DEVELOPER");
-    }
-
-    @Test
-    void adminCanPromoteViewerToProjectManager() {
-        assertPromotesTo("PROJECT_MANAGER");
-    }
-
-    @Test
-    void adminCanPromoteViewerToAdmin() {
-        assertPromotesTo("ADMIN");
-    }
-
-    @Test
-    void adminCanPromoteViewerToTester() {
-        assertPromotesTo("TESTER");
-    }
-
-    @Test
-    void adminCanSetViewerRoleAndInputIsNormalized() {
-        User actor = user(1L, "admin@example.com", "ADMIN");
-        User target = user(2L, "target@example.com", "DEVELOPER");
-        when(userRepository.findByEmailIgnoreCase(actor.getEmail())).thenReturn(Optional.of(actor));
-        when(userRepository.findById(2L)).thenReturn(Optional.of(target));
-        when(userRepository.save(target)).thenReturn(target);
-
-        User updated = userService.updateUserRole(2L, " viewer ", actor.getEmail());
-
-        assertEquals("VIEWER", updated.getRole());
-        verify(auditLogService).createLog(
-            "ROLE_CHANGED", "User 'target@example.com' role changed from 'DEVELOPER' to 'VIEWER'", null, 1L);
-    }
-
-    @Test
-    void rejectsRolesOutsideTheAllowedList() {
-        for (String invalidRole : List.of("admin123", "SUPER_ADMIN", "ROOT", "")) {
-            ResponseStatusException exception = assertThrows(ResponseStatusException.class,
-                () -> userService.updateUserRole(2L, invalidRole, "admin@example.com"));
-            assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
-        }
-
-        verify(userRepository, never()).findById(2L);
-    }
-
-    @Test
-    void adminCannotChangeTheirOwnRole() {
-        User admin = user(1L, "admin@example.com", "ADMIN");
-        when(userRepository.findByEmailIgnoreCase(admin.getEmail())).thenReturn(Optional.of(admin));
-        when(userRepository.findById(1L)).thenReturn(Optional.of(admin));
-
-        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
-            () -> userService.updateUserRole(1L, "VIEWER", admin.getEmail()));
-
-        assertEquals(HttpStatus.FORBIDDEN, exception.getStatusCode());
-        verify(userRepository, never()).save(admin);
-        verify(auditLogService, never()).createLog(eq("ROLE_CHANGED"), org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
-    }
-
-    @Test
-    void unchangedRoleDoesNotCreateAChangeAuditEntry() {
-        User admin = user(1L, "admin@example.com", "ADMIN");
+    void legacyRoleUpdateNormalizesAndDelegatesAConfiguredGlobalRole() {
         User target = user(2L, "target@example.com", "VIEWER");
-        when(userRepository.findByEmailIgnoreCase(admin.getEmail())).thenReturn(Optional.of(admin));
+        when(authorizationRoleRepository.findByCodeAndRetiredFalse("PROJECT_MANAGER"))
+            .thenReturn(Optional.of(role("PROJECT_MANAGER", PermissionScope.GLOBAL, 7L)));
         when(userRepository.findById(2L)).thenReturn(Optional.of(target));
 
-        userService.updateUserRole(2L, "VIEWER", admin.getEmail());
+        User result = userService.updateUserRole(2L, " project_manager ", "admin@example.com");
 
-        verify(userRepository, never()).save(target);
-        verify(auditLogService, never()).createLog(eq("ROLE_CHANGED"), org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        assertEquals(target, result);
+        verify(roleManagementService).assignGlobalRole(2L, 7L, "admin@example.com");
     }
 
-    private void assertPromotesTo(String role) {
-        User admin = user(1L, "admin@example.com", "ADMIN");
-        User target = user(2L, "target@example.com", "VIEWER");
-        when(userRepository.findByEmailIgnoreCase(admin.getEmail())).thenReturn(Optional.of(admin));
-        when(userRepository.findById(2L)).thenReturn(Optional.of(target));
-        when(userRepository.save(target)).thenReturn(target);
+    @Test
+    void legacyRoleUpdateRejectsUnknownOrRetiredRolesWithoutChangingAccount() {
+        when(authorizationRoleRepository.findByCodeAndRetiredFalse("ROOT")).thenReturn(Optional.empty());
 
-        User updated = userService.updateUserRole(2L, role, admin.getEmail());
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+            () -> userService.updateUserRole(2L, " root ", "admin@example.com"));
 
-        assertEquals(role, updated.getRole());
-        verify(auditLogService).createLog(
-            "ROLE_CHANGED", "User 'target@example.com' role changed from 'VIEWER' to '" + role + "'", null, 1L);
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
+        verify(roleManagementService, never()).assignGlobalRole(org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString());
+        verify(userRepository, never()).save(org.mockito.ArgumentMatchers.any(User.class));
+    }
+
+    @Test
+    void legacyRoleUpdateRejectsScopedRoles() {
+        when(authorizationRoleRepository.findByCodeAndRetiredFalse("DEVELOPER_PROJECT"))
+            .thenReturn(Optional.of(role("DEVELOPER_PROJECT", PermissionScope.PROJECT, 8L)));
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+            () -> userService.updateUserRole(2L, "DEVELOPER_PROJECT", "admin@example.com"));
+
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
+        verify(roleManagementService, never()).assignGlobalRole(org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString());
     }
 
     private User user(Long id, String email, String role) {
@@ -129,5 +84,11 @@ class UserRoleManagementTests {
         user.setEmail(email);
         user.setRole(role);
         return user;
+    }
+
+    private AuthorizationRole role(String code, PermissionScope scope, Long id) {
+        AuthorizationRole role = new AuthorizationRole(code, code, scope, true);
+        ReflectionTestUtils.setField(role, "id", id);
+        return role;
     }
 }

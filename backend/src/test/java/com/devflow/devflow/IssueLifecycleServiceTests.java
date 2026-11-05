@@ -17,13 +17,16 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.devflow.devflow.entity.Issue;
 import com.devflow.devflow.entity.User;
+import com.devflow.devflow.entity.AutomationTriggerType;
 import com.devflow.devflow.dto.IssueUpdateRequestDTO;
 import com.devflow.devflow.dto.IssueCreateRequestDTO;
 import com.devflow.devflow.repository.IssueRepository;
+import com.devflow.devflow.repository.IssueDependencyRepository;
 import com.devflow.devflow.repository.ProjectRepository;
 import com.devflow.devflow.repository.SprintRepository;
 import com.devflow.devflow.repository.UserRepository;
@@ -32,11 +35,17 @@ import com.devflow.devflow.repository.TestExecutionRepository;
 import com.devflow.devflow.service.AuditLogServices;
 import com.devflow.devflow.service.IssueService;
 import com.devflow.devflow.service.NotificationService;
+import com.devflow.devflow.service.AutomationEventService;
+import com.devflow.devflow.service.EffectivePermissionService;
+import com.devflow.devflow.service.ProjectAccessService;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.mockito.Mockito;
 
 @ExtendWith(MockitoExtension.class)
 class IssueLifecycleServiceTests {
 
     @Mock private IssueRepository issueRepository;
+    @Mock private IssueDependencyRepository issueDependencyRepository;
     @Mock private ProjectRepository projectRepository;
     @Mock private SprintRepository sprintRepository;
     @Mock private UserRepository userRepository;
@@ -44,7 +53,30 @@ class IssueLifecycleServiceTests {
     @Mock private TestExecutionRepository testExecutionRepository;
     @Mock private AuditLogServices auditLogService;
     @Mock private NotificationService notificationService;
+    @Mock private AutomationEventService automationEventService;
+    @Mock private EffectivePermissionService permissions;
+    @Mock private ProjectAccessService projectAccessService;
     @InjectMocks private IssueService service;
+
+    @BeforeEach
+    void injectCurrentAuthorizationCollaborators() {
+        ReflectionTestUtils.setField(service, "permissions", permissions);
+        ReflectionTestUtils.setField(service, "projectAccessService", projectAccessService);
+        Mockito.lenient().when(permissions.has(Mockito.anyString(), Mockito.anyString(),
+                Mockito.nullable(Long.class), Mockito.nullable(Long.class)))
+            .thenAnswer(call -> allowed(call.getArgument(0), call.getArgument(1)));
+        Mockito.lenient().when(permissions.hasGlobal(Mockito.anyString(), Mockito.anyString()))
+            .thenAnswer(call -> allowed(call.getArgument(0), call.getArgument(1)));
+        Mockito.lenient().when(permissions.hasAnywhere(Mockito.anyString(), Mockito.anyString()))
+            .thenAnswer(call -> allowed(call.getArgument(0), call.getArgument(1)));
+        Mockito.lenient().doAnswer(call -> {
+            if (!allowed(call.getArgument(0), call.getArgument(1))) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Required permission is not granted");
+            }
+            return null;
+        }).when(permissions).require(Mockito.anyString(), Mockito.anyString(),
+            Mockito.nullable(Long.class), Mockito.nullable(Long.class));
+    }
 
     @Test
     void issueCreatorIsRecordedAsReporterAndGeneratedFieldsStartUnset() {
@@ -94,6 +126,7 @@ class IssueLifecycleServiceTests {
         issue.setId(12L);
         issue.setTitle("Queue issue");
         when(userRepository.findByEmail(manager.getEmail())).thenReturn(Optional.of(manager));
+        when(permissions.hasGlobal(tester.getEmail(), "ASSIGNABLE_TESTER")).thenReturn(true);
         when(issueRepository.findByIdForUpdate(12L)).thenReturn(Optional.of(issue));
         when(issueRepository.save(issue)).thenReturn(issue);
         when(userRepository.findById(8L)).thenReturn(Optional.of(tester));
@@ -102,7 +135,29 @@ class IssueLifecycleServiceTests {
 
         assertEquals("tester@example.com", response.getTester().getEmail());
         verify(auditLogService).createLog(eq("TESTER_ASSIGNED"), any(), eq(12L), eq(7L));
-        verify(notificationService).createNotification(eq(tester), eq("TESTER_ASSIGNED"), any());
+        verify(notificationService).createNotification(eq(tester), eq("TESTER_ASSIGNED"), any(), eq("/issues?issueId=12"));
+    }
+
+    @Test
+    void changingTesterNotifiesBothNewAndFormerTester() {
+        User manager = user(7L, "manager@example.com", "PROJECT_MANAGER");
+        User oldTester = user(8L, "old-tester@example.com", "TESTER");
+        User newTester = user(9L, "new-tester@example.com", "TESTER");
+        Issue issue = new Issue();
+        issue.setId(12L);
+        issue.setTitle("Queue issue");
+        issue.setTester(oldTester);
+        when(userRepository.findByEmail(manager.getEmail())).thenReturn(Optional.of(manager));
+        when(userRepository.findById(newTester.getId())).thenReturn(Optional.of(newTester));
+        when(userRepository.findById(oldTester.getId())).thenReturn(Optional.of(oldTester));
+        when(permissions.hasGlobal(newTester.getEmail(), "ASSIGNABLE_TESTER")).thenReturn(true);
+        when(issueRepository.findByIdForUpdate(issue.getId())).thenReturn(Optional.of(issue));
+        when(issueRepository.save(issue)).thenReturn(issue);
+
+        service.assignTester(issue.getId(), newTester.getId(), manager.getEmail());
+
+        verify(notificationService).createNotification(eq(newTester), eq("TESTER_ASSIGNED"), any(), eq("/issues?issueId=12"));
+        verify(notificationService).createNotification(eq(oldTester), eq("TESTER_UNASSIGNED"), any(), eq("/issues?issueId=12"));
     }
 
     @Test
@@ -135,6 +190,7 @@ class IssueLifecycleServiceTests {
         when(userRepository.findByEmail(manager.getEmail())).thenReturn(Optional.of(manager));
         when(issueRepository.findByIdForUpdate(12L)).thenReturn(Optional.of(issue));
         when(userRepository.findById(8L)).thenReturn(Optional.of(incorrectlyCasedTester));
+        when(permissions.hasGlobal(incorrectlyCasedTester.getEmail(), "ASSIGNABLE_TESTER")).thenReturn(false);
 
         ResponseStatusException error = assertThrows(ResponseStatusException.class,
             () -> service.assignTester(12L, 8L, manager.getEmail()));
@@ -205,6 +261,10 @@ class IssueLifecycleServiceTests {
             service.updateIssue(3L, request, developer.getEmail());
             assertEquals(status, existing.getStatus());
         }
+        verify(automationEventService).enqueue(eq(AutomationTriggerType.TASK_STATUS_CHANGED), eq(existing),
+            eq("OPEN"), eq("IN_PROGRESS"), any());
+        verify(automationEventService).enqueue(eq(AutomationTriggerType.TASK_STATUS_CHANGED), eq(existing),
+            eq("CODE_REVIEW"), eq("READY_FOR_TESTING"), any());
     }
 
     @Test
@@ -240,5 +300,17 @@ class IssueLifecycleServiceTests {
         user.setEmail(email);
         user.setRole(role);
         return user;
+    }
+
+    private boolean allowed(String email, String key) {
+        if (email != null && email.startsWith("admin")) return true;
+        if (email != null && email.startsWith("manager")) return !"TESTING_OVERRIDE".equals(key);
+        if (email != null && email.startsWith("developer")) {
+            return List.of("ISSUE_CREATE", "ISSUE_UPDATE", "ISSUE_UPDATE_ASSIGNED", "ISSUE_STATUS_ADVANCE",
+                "ASSIGNABLE_DEVELOPER").contains(key);
+        }
+        if (email != null && email.startsWith("reporter")) return "ISSUE_CREATE".equals(key);
+        if (email != null && email.startsWith("tester")) return List.of("ASSIGNABLE_TESTER", "TEST_EXECUTE").contains(key);
+        return false;
     }
 }

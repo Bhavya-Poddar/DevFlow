@@ -29,6 +29,7 @@ import com.devflow.devflow.repository.ProjectRepository;
 import com.devflow.devflow.repository.SprintRepository;
 import com.devflow.devflow.repository.UserRepository;
 import com.devflow.devflow.security.JwtService;
+import com.devflow.devflow.service.EffectivePermissionService;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -43,10 +44,12 @@ class CreateEndpointMassAssignmentTests {
     @Autowired private SprintRepository sprintRepository;
     @Autowired private IssueRepository issueRepository;
     @Autowired private CommentRepository commentRepository;
+    @Autowired private EffectivePermissionService effectivePermissionService;
 
     private User admin;
     private User developer;
     private User protectedUser;
+    private User tester;
     private Project protectedProject;
     private Sprint protectedSprint;
     private Issue protectedIssue;
@@ -57,6 +60,7 @@ class CreateEndpointMassAssignmentTests {
         admin = user("admin@mass-assignment.test", "ADMIN");
         developer = user("developer@mass-assignment.test", "DEVELOPER");
         protectedUser = user("protected@mass-assignment.test", "VIEWER");
+        tester = user("tester@mass-assignment.test", "TESTER");
 
         protectedProject = new Project();
         protectedProject.setName("Protected project");
@@ -84,22 +88,17 @@ class CreateEndpointMassAssignmentTests {
     }
 
     @Test
-    void publicRegistrationIgnoresExistingIdAndAlwaysCreatesViewer() throws Exception {
+    void publicRegistrationRejectsRequestsWithoutModifyingExistingOrCreatingUsers() throws Exception {
         String body = "{\"id\":" + protectedUser.getId()
             + ",\"name\":\"Attacker\",\"email\":\"new-registration@mass-assignment.test\","
             + "\"password\":\"new-password\",\"role\":\"ADMIN\"}";
         mockMvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON).content(body))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.role").value("VIEWER"))
-            .andExpect(jsonPath("$.password").doesNotExist());
+            .andExpect(status().isForbidden());
 
         User unchanged = userRepository.findById(protectedUser.getId()).orElseThrow();
         assertEquals("protected@mass-assignment.test", unchanged.getEmail());
         assertEquals("VIEWER", unchanged.getRole());
-        User created = userRepository.findByEmail("new-registration@mass-assignment.test").orElseThrow();
-        assertNotEquals(protectedUser.getId(), created.getId());
-        assertEquals("VIEWER", created.getRole());
-        assertTrue(passwordEncoder.matches("new-password", created.getPassword()));
+        assertTrue(userRepository.findByEmail("new-registration@mass-assignment.test").isEmpty());
     }
 
     @Test
@@ -120,9 +119,27 @@ class CreateEndpointMassAssignmentTests {
     }
 
     @Test
+    void nonRecoveryAccountCannotAssignAnInitialGlobalRoleDuringUserCreation() throws Exception {
+        User ordinaryAdmin = user("ordinary-admin@mass-assignment.test", "ADMIN");
+        ordinaryAdmin.setAdminRecovery(false);
+        ordinaryAdmin = userRepository.saveAndFlush(ordinaryAdmin);
+        assertFalse(userRepository.findById(ordinaryAdmin.getId()).orElseThrow().hasAdminRecovery());
+        assertFalse(effectivePermissionService.hasGlobal(ordinaryAdmin.getEmail(), "ROLE_MANAGE"));
+        mockMvc.perform(post("/api/users").header("Authorization", bearer(ordinaryAdmin))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Privilege escalation\",\"email\":\"new-admin@mass-assignment.test\","
+                    + "\"password\":\"new-password\",\"role\":\"ADMIN\"}"))
+            .andExpect(status().isForbidden());
+        assertTrue(userRepository.findByEmail("new-admin@mass-assignment.test").isEmpty());
+    }
+
+    @Test
     void projectCreationIgnoresExistingId() throws Exception {
         String body = "{\"id\":" + protectedProject.getId()
-            + ",\"name\":\"Attacker project\",\"description\":\"new\"}";
+            + ",\"name\":\"Attacker project\",\"description\":\"new\",\"teamComposition\":{"
+            + "\"managerUserId\":" + admin.getId() + ",\"projectManagerIds\":[" + admin.getId() + "],"
+            + "\"teamLeadIds\":[" + protectedUser.getId() + "],\"developerIds\":[" + developer.getId() + "],"
+            + "\"testerIds\":[" + tester.getId() + "]}}";
         mockMvc.perform(post("/api/projects").header("Authorization", bearer(admin))
                 .contentType(MediaType.APPLICATION_JSON).content(body))
             .andExpect(status().isCreated());
@@ -131,6 +148,20 @@ class CreateEndpointMassAssignmentTests {
         Project created = projectRepository.findAll().stream()
             .filter(project -> "Attacker project".equals(project.getName())).findFirst().orElseThrow();
         assertNotEquals(protectedProject.getId(), created.getId());
+        assertNotNull(created.getTeamId());
+    }
+
+    @Test
+    void projectCreationRejectsIncompleteTeamWithoutLeavingPartialProject() throws Exception {
+        long projectsBefore = projectRepository.count();
+        mockMvc.perform(post("/api/projects").header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Incomplete composition\",\"teamComposition\":{\"managerUserId\":"
+                    + admin.getId() + ",\"projectManagerIds\":[" + admin.getId() + "],\"teamLeadIds\":["
+                    + protectedUser.getId() + "],\"developerIds\":[" + developer.getId() + "],\"testerIds\":[]}}"))
+            .andExpect(status().isBadRequest());
+        assertEquals(projectsBefore, projectRepository.count());
+        assertTrue(projectRepository.findAll().stream().noneMatch(project -> "Incomplete composition".equals(project.getName())));
     }
 
     @Test
@@ -151,11 +182,9 @@ class CreateEndpointMassAssignmentTests {
     @Test
     void issueCreationIgnoresExistingIdAndUsesServerOwnership() throws Exception {
         String body = "{\"id\":" + protectedIssue.getId()
-            + ",\"title\":\"Attacker issue\",\"status\":\"OPEN\","
+            + ",\"title\":\"Attacker issue\",\"status\":\"OPEN\",\"priority\":\"MEDIUM\","
             + "\"project\":{\"id\":" + protectedProject.getId() + "},"
-            + "\"assignedUser\":{\"id\":" + developer.getId() + "},"
             + "\"reportedBy\":{\"id\":" + protectedUser.getId() + "},"
-            + "\"tester\":{\"id\":" + protectedUser.getId() + "},"
             + "\"createdAt\":\"2000-01-01T00:00:00\"}";
         mockMvc.perform(post("/api/issues").header("Authorization", bearer(admin))
                 .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -221,6 +250,7 @@ class CreateEndpointMassAssignmentTests {
         user.setEmail(email);
         user.setName(email);
         user.setRole(role);
+        if ("ADMIN".equals(role)) user.setAdminRecovery(true);
         user.setPassword(passwordEncoder.encode("test-password"));
         return userRepository.saveAndFlush(user);
     }

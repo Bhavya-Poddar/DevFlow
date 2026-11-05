@@ -10,8 +10,8 @@ import com.devflow.devflow.entity.IssueStatus;
 class IssueStatusTests {
 
     @Test
-    void onlyTheSixApprovedStatusesCanBeParsed() {
-        assertEquals(6, IssueStatus.values().length);
+    void onlyTheEightApprovedStatusesCanBeParsed() {
+        assertEquals(8, IssueStatus.values().length);
         for (IssueStatus status : IssueStatus.values()) {
             assertEquals(status, IssueStatus.fromRequest(status.name()));
         }
@@ -41,7 +41,8 @@ class IssueStatusTests {
     void managerTransitionsPreserveExistingManualMovesButReserveTestingStates() {
         for (IssueStatus current : IssueStatus.values()) {
             for (IssueStatus target : IssueStatus.values()) {
-                boolean expected = current != IssueStatus.TESTING && target.isManualTarget();
+                boolean expected = current.isManualTarget()
+                    && (current.isNextDeveloperStatus(target) || target == IssueStatus.IN_PROGRESS && current != IssueStatus.OPEN);
                 assertEquals(expected, current.allowsManagerTransitionTo(target), current + " -> " + target);
             }
         }

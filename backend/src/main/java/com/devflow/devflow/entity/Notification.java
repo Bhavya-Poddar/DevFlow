@@ -21,6 +21,9 @@ public class Notification {
     private String message;
     private String type;
 
+    @Column(name = "target_path", length = 512)
+    private String targetPath;
+
     @Column(name = "is_read")
     private boolean read;
     private LocalDateTime createdAt;
@@ -42,6 +45,8 @@ public class Notification {
     public void setMessage(String message) { this.message = message; }
     public String getType() { return type; }
     public void setType(String type) { this.type = type; }
+    public String getTargetPath() { return targetPath; }
+    public void setTargetPath(String targetPath) { this.targetPath = targetPath; }
     public boolean isRead() { return read; }
     public void setRead(boolean read) { this.read = read; }
     public LocalDateTime getCreatedAt() { return createdAt; }

@@ -25,12 +25,18 @@ import com.devflow.devflow.dto.TestCompletionRequestDTO;
 import com.devflow.devflow.entity.Issue;
 import com.devflow.devflow.entity.TestExecution;
 import com.devflow.devflow.entity.User;
+import com.devflow.devflow.entity.AutomationTriggerType;
 import com.devflow.devflow.repository.IssueRepository;
 import com.devflow.devflow.repository.TestExecutionRepository;
 import com.devflow.devflow.repository.UserRepository;
+import com.devflow.devflow.repository.ProjectRoleAssignmentRepository;
+import com.devflow.devflow.repository.TeamRoleAssignmentRepository;
 import com.devflow.devflow.service.AuditLogServices;
 import com.devflow.devflow.service.NotificationService;
+import com.devflow.devflow.service.AutomationEventService;
 import com.devflow.devflow.service.TestExecutionService;
+import com.devflow.devflow.service.ProjectAccessService;
+import com.devflow.devflow.service.EffectivePermissionService;
 
 @ExtendWith(MockitoExtension.class)
 class TestExecutionServiceTests {
@@ -40,6 +46,11 @@ class TestExecutionServiceTests {
     @Mock private UserRepository userRepository;
     @Mock private AuditLogServices auditLogService;
     @Mock private NotificationService notificationService;
+    @Mock private AutomationEventService automationEventService;
+    @Mock private ProjectAccessService projectAccessService;
+    @Mock private EffectivePermissionService permissions;
+    @Mock private ProjectRoleAssignmentRepository projectRoles;
+    @Mock private TeamRoleAssignmentRepository teamRoles;
     @InjectMocks private TestExecutionService service;
 
     private User tester;
@@ -56,7 +67,9 @@ class TestExecutionServiceTests {
         issue.setStatus("READY_FOR_TESTING");
         issue.setTester(tester);
         issue.setAssignedUser(developer);
+        lenient().when(projectAccessService.visibleProjectIds(tester.getEmail())).thenReturn(List.of());
         lenient().when(userRepository.findByEmailIgnoreCase(tester.getEmail())).thenReturn(Optional.of(tester));
+        lenient().when(permissions.hasAnywhere(tester.getEmail(), "TESTING_MY_READ")).thenReturn(true);
         lenient().when(issueRepository.findByIdForUpdate(4L)).thenReturn(Optional.of(issue));
         lenient().when(executionRepository.save(any(TestExecution.class))).thenAnswer(call -> {
             TestExecution saved = call.getArgument(0);
@@ -95,11 +108,11 @@ class TestExecutionServiceTests {
         assertEquals("IN_PROGRESS", result.getStatus());
         assertEquals("TESTING", issue.getStatus());
         verify(auditLogService).createLog(eq("TEST_STARTED"), any(), eq(4L), eq(10L));
-        verify(notificationService).createNotification(eq(developer), eq("TEST_STARTED"), any());
+        verify(notificationService).createNotification(eq(developer), eq("TEST_STARTED"), any(), eq("/issues?issueId=4"));
     }
 
     @Test
-    void passingTestCompletesHistoryAndResolvesIssue() {
+    void passingTestCompletesHistoryAndMovesIssueToTeamLeadApproval() {
         TestExecution active = new TestExecution();
         active.setId(99L);
         active.setIssue(issue);
@@ -123,10 +136,13 @@ class TestExecutionServiceTests {
         assertEquals("Login screen completed successfully.", result.getNotes());
         assertEquals("Dashboard appeared", active.getActualResult());
         assertEquals("COMPLETED", active.getStatus());
-        assertEquals("RESOLVED", issue.getStatus());
+        assertEquals("TEAM_LEAD_APPROVAL", issue.getStatus());
         verify(auditLogService).createLog(eq("TEST_PASSED"),
-            org.mockito.ArgumentMatchers.contains("Notes: Login screen completed successfully."), eq(4L), eq(10L));
-        verify(notificationService).createNotification(eq(developer), eq("TEST_PASSED"), any());
+            org.mockito.ArgumentMatchers.contains("testOutcome=PASSED"), eq(4L), eq(10L));
+        verify(automationEventService).enqueue(eq(AutomationTriggerType.TESTING_PASSED), eq(issue),
+            eq("TESTING"), eq("TEAM_LEAD_APPROVAL"), any());
+        verify(automationEventService, org.mockito.Mockito.never()).enqueue(eq(AutomationTriggerType.BLOCKING_TASK_RESOLVED),
+            eq(issue), any(), any(), any());
     }
 
     @Test
@@ -153,7 +169,10 @@ class TestExecutionServiceTests {
         assertEquals("IN_PROGRESS", issue.getStatus());
         assertEquals("FAILED", active.getResult());
         verify(auditLogService).createLog(eq("TEST_FAILED"), any(), eq(4L), eq(10L));
-        verify(notificationService).createNotification(eq(developer), eq("TEST_FAILED"), any());
+        verify(automationEventService).enqueue(eq(AutomationTriggerType.TESTING_FAILED), eq(issue),
+            eq("TESTING"), eq("IN_PROGRESS"), any());
+        verify(notificationService).createNotification(eq(developer), eq("TEST_FAILED"),
+            org.mockito.ArgumentMatchers.contains("Login fails with special characters."), eq("/issues?issueId=4"));
     }
 
     @Test

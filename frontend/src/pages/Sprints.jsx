@@ -1,10 +1,14 @@
+import { apiUrl } from "../services/apiConfig";
 import { useEffect, useState } from "react";
+import RecordTable from "../components/RecordTable";
+import { loadDropdownOptions, dropdownLabel } from "../services/dropdownOptions";
 
 function Sprints() {
     const [sprints, setSprints] = useState([]);
     const [projects, setProjects] = useState([]);
     const [issues, setIssues] = useState([]);
     const [boardSprint, setBoardSprint] = useState("ALL");
+    const [viewMode, setViewMode] = useState("LIST");
     const [role, setRole] = useState("VIEWER");
     const canManage = ["ADMIN", "PROJECT_MANAGER"].includes(role);
     const [loading, setLoading] = useState(true);
@@ -23,13 +27,15 @@ function Sprints() {
     const [startDate, setStartDate] = useState("");
     const [endDate, setEndDate] = useState("");
     const [status, setStatus] = useState("PLANNED");
+    const [statusOptions, setStatusOptions] = useState([]);
+    const [priorityOptions, setPriorityOptions] = useState([]);
     const [projectId, setProjectId] = useState("");
 
     const fetchSprints = async () => {
         const token = localStorage.getItem("token");
 
         try {
-            const response = await fetch("http://localhost:8080/api/sprints", {
+            const response = await fetch(apiUrl("/api/sprints"), {
                 headers: { Authorization: `Bearer ${token}` }
             });
 
@@ -47,7 +53,7 @@ function Sprints() {
         const token = localStorage.getItem("token");
 
         try {
-            const response = await fetch("http://localhost:8080/api/projects", {
+            const response = await fetch(apiUrl("/api/projects"), {
                 headers: { Authorization: `Bearer ${token}` }
             });
 
@@ -61,18 +67,20 @@ function Sprints() {
 
     const fetchIssues = async () => {
         try {
-            const response = await fetch("http://localhost:8080/api/issues", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
-            if (!response.ok) throw new Error("Failed to load sprint issues");
+            const response = await fetch(apiUrl("/api/issues"), { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+            if (!response.ok) throw new Error("Failed to load sprint tasks");
             setIssues(await response.json());
         } catch (error) { setError(error.message); }
     };
 
     useEffect(() => {
+        loadDropdownOptions("SPRINT_STATUS").then(setStatusOptions).catch(() => setStatusOptions([]));
+        loadDropdownOptions("PRIORITY").then(setPriorityOptions).catch(() => setPriorityOptions([]));
         void Promise.resolve().then(() => Promise.all([
             fetchSprints(),
             fetchProjects(),
             fetchIssues(),
-            fetch("http://localhost:8080/api/users/me", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }).then(r => r.ok ? r.json() : null).then(user => { if (user?.role) setRole(user.role); })
+            fetch(apiUrl("/api/users/me"), { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } }).then(r => r.ok ? r.json() : null).then(user => { if (user?.role) setRole(user.role); })
         ]));
     }, []);
 
@@ -103,7 +111,7 @@ function Sprints() {
         const token = localStorage.getItem("token");
 
         try {
-            const response = await fetch("http://localhost:8080/api/sprints", {
+            const response = await fetch(apiUrl("/api/sprints"), {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -140,18 +148,20 @@ function Sprints() {
         setError("");
     };
 
-    const startEditing = () => {
-        if (!selectedSprint) return;
-
-        setName(selectedSprint.name || "");
-        setGoal(selectedSprint.goal || "");
-        setStartDate(selectedSprint.startDate || "");
-        setEndDate(selectedSprint.endDate || "");
-        setStatus(selectedSprint.status || "PLANNED");
-        setProjectId(selectedSprint.project ? String(selectedSprint.project.id) : "");
+    const editSprint = (sprint) => {
+        if (!sprint) return;
+        setSelectedSprint(sprint);
+        setName(sprint.name || "");
+        setGoal(sprint.goal || "");
+        setStartDate(sprint.startDate || "");
+        setEndDate(sprint.endDate || "");
+        setStatus(sprint.status || "PLANNED");
+        setProjectId(sprint.project ? String(sprint.project.id) : "");
         setError("");
         setEditing(true);
     };
+
+    const startEditing = () => editSprint(selectedSprint);
 
     const cancelEditing = () => {
         if (saving) return;
@@ -169,7 +179,7 @@ function Sprints() {
         const token = localStorage.getItem("token");
 
         try {
-            const response = await fetch(`http://localhost:8080/api/sprints/${selectedSprint.id}`, {
+            const response = await fetch(apiUrl(`/api/sprints/${selectedSprint.id}`), {
                 method: "PUT",
                 headers: {
                     "Content-Type": "application/json",
@@ -216,7 +226,7 @@ function Sprints() {
         const token = localStorage.getItem("token");
 
         try {
-            const response = await fetch(`http://localhost:8080/api/sprints/${selectedSprint.id}`, {
+            const response = await fetch(apiUrl(`/api/sprints/${selectedSprint.id}`), {
                 method: "DELETE",
                 headers: { Authorization: `Bearer ${token}` }
             });
@@ -255,11 +265,11 @@ function Sprints() {
     const boardIssues = issues.filter(issue => boardSprint === "ALL" ? true : String(issue.sprint?.id ?? issue.sprintId ?? "") === boardSprint);
 
     return (
-        <div>
-            <div className="flex items-center justify-between mb-8">
+        <main className="dfx-screen dfx-screen--sprints">
+            <div className="dfx-screen-header">
                 <div>
-                    <h1 className="text-3xl font-bold text-white">Sprint Board</h1>
-                    <p className="text-gray-400 mt-1">Follow issue work through engineering and testing.</p>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-[.16em] text-blue-300">DELIVERY / PLANNING</p><h1 className="text-3xl font-bold text-white">Sprint Board</h1>
+                    <p className="text-gray-400 mt-1">Follow task work through engineering and testing.</p>
                 </div>
 
                 {canManage && <button
@@ -270,17 +280,17 @@ function Sprints() {
                 </button>}
             </div>
 
+            <div className="dfx-sprint-overview" aria-label="Sprint overview"><article><span>Planned</span><strong>{sprints.filter(sprint => sprint.status === "PLANNED").length}</strong><small>Ready to begin</small></article><article><span>Active</span><strong>{sprints.filter(sprint => sprint.status === "ACTIVE").length}</strong><small>In progress</small></article><article><span>Tasks on board</span><strong>{boardIssues.length}</strong><small>{boardSprint === "ALL" ? "Across all sprints" : "In selected sprint"}</small></article></div>
+
             {error && (
                 <div className="mb-6 px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400">
                     {error}
                 </div>
             )}
 
-            <section className="mb-8 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-semibold text-white">Workflow</h2><select aria-label="Select sprint" value={boardSprint} onChange={e=>setBoardSprint(e.target.value)} className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white"><option value="ALL">All sprints</option>{sprints.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
-                <div className="grid gap-3 overflow-x-auto pb-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">{columns.map(([status,title])=><div key={status} className="min-w-[220px] rounded-xl border border-gray-800 bg-gray-900 p-3"><div className="mb-3 flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wide text-gray-300">{title}</h3><span className="rounded-full bg-gray-800 px-2 py-0.5 text-xs text-gray-400">{boardIssues.filter(i=>i.status===status).length}</span></div><div className="space-y-2">{boardIssues.filter(i=>i.status===status).map(issue=><article key={issue.id} className="rounded-lg border border-gray-800 bg-gray-950 p-3"><p className="text-sm font-medium text-white">{issue.title||`Issue #${issue.id}`}</p><p className="mt-1 text-xs text-gray-500">{issue.project?.name||"No project"} · {issue.priority||"—"}</p><p className="mt-2 text-xs text-gray-400">Dev: {issue.assignedUser?.name||"Unassigned"}</p><p className="mt-1 text-xs text-gray-400">Tester: {issue.tester?.name||"Unassigned"}</p><p className="mt-1 text-xs text-blue-300">{String(issue.status||"").replaceAll("_"," ")}</p></article>)}{boardIssues.every(i=>i.status!==status)&&<p className="py-4 text-center text-xs text-gray-600">No issues</p>}</div></div>)}</div>
-            </section>
-            <h2 className="mb-4 text-xl font-semibold text-white">Sprint planning</h2>
+            <section className="mb-5 flex flex-wrap items-center justify-between gap-3"><div className="flex gap-1 rounded-lg border border-gray-800 bg-gray-900 p-1" role="group" aria-label="Sprint view"><button type="button" aria-pressed={viewMode === "LIST"} onClick={() => setViewMode("LIST")} className={`rounded-md px-3 py-2 text-sm ${viewMode === "LIST" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white"}`}>Sprint list</button><button type="button" aria-pressed={viewMode === "BOARD"} onClick={() => setViewMode("BOARD")} className={`rounded-md px-3 py-2 text-sm ${viewMode === "BOARD" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white"}`}>Task workflow</button></div>{viewMode === "BOARD" && <label className="flex items-center gap-2 text-sm text-gray-400">Sprint<select aria-label="Select sprint" value={boardSprint} onChange={e => setBoardSprint(e.target.value)} className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white"><option value="ALL">All sprints</option>{sprints.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}</section>
+
+            {viewMode === "BOARD" && <section className="mb-8 space-y-4"><div className="grid gap-3 overflow-x-auto pb-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">{columns.map(([status,title])=><div key={status} className="min-w-[220px] rounded-xl border border-gray-800 bg-gray-900 p-3"><div className="mb-3 flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wide text-gray-300">{dropdownLabel(statusOptions,status,title)}</h3><span className="rounded-full bg-gray-800 px-2 py-0.5 text-xs text-gray-400">{boardIssues.filter(i=>i.status===status).length}</span></div><div className="space-y-2">{boardIssues.filter(i=>i.status===status).map(issue=><article key={issue.id} className="rounded-lg border border-gray-800 bg-gray-950 p-3"><p className="text-sm font-medium text-white">{issue.title||`Task #${issue.id}`}</p><p className="mt-1 text-xs text-gray-500">{issue.project?.name||"No project"} · {dropdownLabel(priorityOptions,issue.priority,issue.priority||"—")}</p><p className="mt-2 text-xs text-gray-400">Developer: {issue.assignedUser?.name||"Unassigned"}</p><p className="mt-1 text-xs text-gray-400">Tester: {issue.tester?.name||"Unassigned"}</p><p className="mt-1 text-xs text-blue-300">{dropdownLabel(statusOptions,issue.status,String(issue.status||"").replaceAll("_"," "))}</p></article>)}{boardIssues.every(i=>i.status!==status)&&<p className="py-4 text-center text-xs text-gray-600">No tasks</p>}</div></div>)}</div></section>}
 
             {loading ? (
                 <div className="text-gray-400">Loading sprints...</div>
@@ -290,41 +300,20 @@ function Sprints() {
                     <p className="text-gray-400">Create your first sprint to get started.</p>
                 </div>
             ) : (
-                <div className="grid gap-4">
-                    {sprints.map((sprint) => (
-                        <div
-                            key={sprint.id}
-                            onClick={() => openSprintDetails(sprint)}
-                            className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 cursor-pointer transition"
-                        >
-                            <div className="flex items-start justify-between gap-4">
-                                <div>
-                                    <h2 className="text-xl font-semibold text-white">{sprint.name}</h2>
-                                    <p className="text-gray-400 mt-2">{sprint.goal}</p>
-                                </div>
-
-                                <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusClass(sprint.status)}`}>
-                                    {sprint.status}
-                                </span>
-                            </div>
-
-                            <div className="flex flex-wrap gap-3 mt-5 text-sm">
-                                <span className="px-3 py-1 rounded-lg bg-gray-800 text-gray-300">
-                                    📅 {sprint.startDate}
-                                </span>
-
-                                <span className="px-3 py-1 rounded-lg bg-gray-800 text-gray-300">
-                                    🏁 {sprint.endDate}
-                                </span>
-
-                                {sprint.project && (
-                                    <span className="px-3 py-1 rounded-lg bg-gray-800 text-gray-300">
-                                        📁 {sprint.project.name}
-                                    </span>
-                                )}
-                            </div>
-                        </div>
-                    ))}
+                <div className="df-panel overflow-hidden">
+                    <RecordTable rows={sprints} searchLabel="Search sprints" searchPlaceholder="Search sprints by name, goal, or project…" emptyLabel="No sprints match your search." getSearchText={sprint => `${sprint.name || ""} ${sprint.goal || ""} ${sprint.project?.name || ""} ${sprint.status || ""}`} columns={[
+                        { key: "name", label: "Sprint", sortValue: sprint => sprint.name, render: sprint => <button type="button" onClick={() => openSprintDetails(sprint)} className="min-w-40 text-left font-semibold text-white hover:text-blue-300">{sprint.name || "Untitled sprint"}<span className="mt-1 block max-w-sm truncate text-xs font-normal text-gray-500">{sprint.goal || "No sprint goal"}</span></button> },
+                        { key: "project", label: "Project", sortValue: sprint => sprint.project?.name || "", render: sprint => sprint.project?.name || "—" },
+                        { key: "start", label: "Start date", sortValue: sprint => sprint.startDate || "", render: sprint => sprint.startDate || "—" },
+                        { key: "end", label: "End date", sortValue: sprint => sprint.endDate || "", render: sprint => sprint.endDate || "—" },
+                        { key: "status", label: "Status", sortValue: sprint => sprint.status, render: sprint => <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${getStatusClass(sprint.status)}`}>{dropdownLabel(statusOptions, sprint.status, sprint.status?.replaceAll("_", " ") || "Unknown")}</span> }
+                    ]} actionsForRow={sprint => [
+                        { label: "View details", onSelect: () => openSprintDetails(sprint) },
+                        ...(canManage ? [
+                            { label: "Edit sprint", onSelect: () => editSprint(sprint) },
+                            { label: "Delete sprint", danger: true, onSelect: () => { setSelectedSprint(sprint); setShowDeleteConfirm(true); } }
+                        ] : [])
+                    ]} />
                 </div>
             )}
 
@@ -393,9 +382,7 @@ function Sprints() {
                                         onChange={(e) => setStatus(e.target.value)}
                                         className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white outline-none"
                                     >
-                                        <option value="PLANNED">PLANNED</option>
-                                        <option value="ACTIVE">ACTIVE</option>
-                                        <option value="COMPLETED">COMPLETED</option>
+                                        {(statusOptions.length ? statusOptions : ["PLANNED", "ACTIVE", "COMPLETED"].map(code => ({code,displayLabel:code.replaceAll("_"," ")}))).map(option=><option key={option.code} value={option.code}>{option.displayLabel}</option>)}
                                     </select>
                                 </div>
 
@@ -462,7 +449,7 @@ function Sprints() {
                                         <div>
                                             <p className="text-sm text-gray-500 mb-1">Status</p>
                                             <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${getStatusClass(selectedSprint.status)}`}>
-                                                {selectedSprint.status}
+                                                {dropdownLabel(statusOptions,selectedSprint.status,selectedSprint.status)}
                                             </span>
                                         </div>
 
@@ -572,9 +559,7 @@ function Sprints() {
                                                 onChange={(e) => setStatus(e.target.value)}
                                                 className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white outline-none"
                                             >
-                                                <option value="PLANNED">PLANNED</option>
-                                                <option value="ACTIVE">ACTIVE</option>
-                                                <option value="COMPLETED">COMPLETED</option>
+                                                {(statusOptions.length ? statusOptions : ["PLANNED", "ACTIVE", "COMPLETED"].map(code => ({code,displayLabel:code.replaceAll("_"," ")}))).map(option=><option key={option.code} value={option.code}>{option.displayLabel}</option>)}
                                             </select>
                                         </div>
 
@@ -594,7 +579,9 @@ function Sprints() {
                                         </div>
                                     </div>
 
-                                    {error && (
+
+
+            {error && (
                                         <div className="px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400">
                                             {error}
                                         </div>
@@ -656,7 +643,7 @@ function Sprints() {
                     </div>
                 </div>
             )}
-        </div>
+        </main>
     );
 }
 

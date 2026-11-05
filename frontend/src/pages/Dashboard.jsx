@@ -1,1084 +1,411 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Avatar from "../components/Avatar";
+import { apiUrl } from "../services/apiConfig";
+import { responseErrorMessage } from "../utils/responseError";
+import "./Dashboard.css";
 
-const asList = data => Array.isArray(data) ? data : Array.isArray(data?.content) ? data.content : [];
+const statusColors = {
+    OPEN: "#7186ff",
+    IN_PROGRESS: "#38bdf8",
+    CODE_REVIEW: "#a78bfa",
+    READY_FOR_TESTING: "#fbbf24",
+    TESTING: "#fb923c",
+    RESOLVED: "#34d399"
+};
 
+async function requestJson(path, token, signal) {
+    const response = await fetch(apiUrl(path), {
+        headers: { Authorization: `Bearer ${token}` },
+        signal
+    });
+    if (!response.ok) {
+        throw new Error(await responseErrorMessage(response, "Could not load this dashboard section."));
+    }
+    return response.json();
+}
+
+function useDashboardRequest(path, token, query = "", enabled = true) {
+    const [state, setState] = useState({ key: "", data: null, error: "" });
+    const requestKey = `${path}?${query}`;
+    useEffect(() => {
+        if (!token || !enabled) return undefined;
+        const controller = new AbortController();
+        requestJson(`${path}${query ? `?${query}` : ""}`, token, controller.signal)
+            .then(data => setState({ key: requestKey, data, error: "" }))
+            .catch(error => {
+                if (error.name !== "AbortError") setState({ key: requestKey, data: null, error: error.message });
+            });
+        return () => controller.abort();
+    }, [path, token, query, enabled, requestKey]);
+    if (!enabled) return { data: null, loading: false, error: "", disabled: true };
+    return state.key === requestKey
+        ? { ...state, loading: false, disabled: false }
+        : { data: null, loading: true, error: "", disabled: false };
+}
 function Dashboard() {
     const navigate = useNavigate();
+    const token = localStorage.getItem("token");
+    const [projectId, setProjectId] = useState("");
+    const [sprintId, setSprintId] = useState("");
     const [user, setUser] = useState(null);
-    const [users, setUsers] = useState([]);
-    const [projects, setProjects] = useState([]);
-    const [issues, setIssues] = useState([]);
-    const [sprints, setSprints] = useState([]);
-    const [auditLogs, setAuditLogs] = useState([]);
-    const [testerQueue, setTesterQueue] = useState([]);
-    const [summary, setSummary] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState("");
+    const [userError, setUserError] = useState("");
+    const [canReviewApprovals, setCanReviewApprovals] = useState(false);
+    const isAdmin = user?.role === "ADMIN";
+    const roleDashboard = {
+        ADMIN: { title: "Platform overview", description: "A global view of delivery, testing, sprint progress, and work at risk." },
+        PROJECT_MANAGER: { title: "Team delivery", description: "Track progress, workload, testing, and delivery risk across projects you manage or can access." },
+        DEVELOPER: { title: "Development workspace", description: "Follow accessible project work, sprint progress, and tasks that need attention." },
+        TESTER: { title: "Testing & team context", description: "See your authorized project context alongside testing outcomes and delivery risks." },
+        VIEWER: { title: "Project overview", description: "Review current progress and delivery signals for projects available to your account." }
+    }[user?.role] || { title: "Engineering insights", description: "Delivery flow, testing outcomes, sprint progress, and current bottlenecks." };
+    const [projects, setProjects] = useState({ data: [], loading: true, error: "" });
+    const [sprints, setSprints] = useState({ data: [], loading: true, error: "" });
+    const [approvalQueue, setApprovalQueue] = useState({ data: null, loading: true, error: "" });
+    const [approvalSaving, setApprovalSaving] = useState(false);
+    const [approvalMessage, setApprovalMessage] = useState("");
+    const [approvalError, setApprovalError] = useState("");
+    const [rejectingApproval, setRejectingApproval] = useState(null);
+    const [rejectionRemark, setRejectionRemark] = useState("");
+
+    const loadApprovals = useCallback(async (signal) => {
+        try {
+            const data = await requestJson("/api/approvals/pending", token, signal);
+            setApprovalQueue({ data, loading: false, error: "" });
+        } catch (error) {
+            if (error.name !== "AbortError") setApprovalQueue(previous => ({ ...previous, loading: false, error: error.message }));
+        }
+    }, [token]);
 
     useEffect(() => {
-        const token = localStorage.getItem("token");
+        if (!token) return undefined;
+        const controller = new AbortController();
+        const refresh = () => void loadApprovals(controller.signal);
+        refresh();
+        window.addEventListener("devflow-approvals-changed", refresh);
+        window.addEventListener("devflow-notification-received", refresh);
+        const interval = window.setInterval(refresh, 60000);
+        return () => { controller.abort(); window.clearInterval(interval); window.removeEventListener("devflow-approvals-changed", refresh); window.removeEventListener("devflow-notification-received", refresh); };
+    }, [token, loadApprovals]);
 
-        if (!token) {
-            navigate("/login");
+    const decideApproval = async (item, decision) => {
+        if (decision === "REJECTED" && !rejectionRemark.trim()) {
+            setApprovalError("Add a remark before rejecting this task.");
             return;
         }
+        setApprovalSaving(true);
+        setApprovalError("");
+        setApprovalMessage("");
+        try {
+            const response = await fetch(apiUrl(`/api/issues/${encodeURIComponent(item.taskId)}/approvals/${encodeURIComponent(item.stage)}`), {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ decision, remark: decision === "REJECTED" ? rejectionRemark.trim() : "" })
+            });
+            if (!response.ok) throw new Error(await responseErrorMessage(response, "Could not save the approval decision."));
+            setApprovalMessage(decision === "APPROVED" ? "Approval recorded." : "Task returned to the developer with your remark.");
+            setRejectingApproval(null);
+            setRejectionRemark("");
+            await loadApprovals();
+            window.dispatchEvent(new Event("devflow-approvals-changed"));
+        } catch (error) {
+            setApprovalError(error.message || "Could not save the approval decision.");
+        } finally {
+            setApprovalSaving(false);
+        }
+    };
 
-        const headers = {
-            Authorization: `Bearer ${token}`
-        };
+    useEffect(() => {
+        if (!token) {
+            navigate("/login", { replace: true });
+            return undefined;
+        }
+        const controller = new AbortController();
+        requestJson("/api/users/me", token, controller.signal)
+            .then(setUser)
+            .catch(error => {
+                if (error.name !== "AbortError") setUserError(error.message);
+            });
+        requestJson("/api/users/me/permissions", token, controller.signal)
+            .then(data => {
+                const permissions = [
+                    ...(data?.global || []),
+                    ...(data?.projects || []).flatMap(scope => scope.permissions || []),
+                    ...(data?.teams || []).flatMap(scope => scope.permissions || [])
+                ];
+                setCanReviewApprovals(permissions.some(permission => ["ISSUE_APPROVE_TEAM_LEAD", "ISSUE_APPROVE_PROJECT_MANAGER"].includes(permission)));
+            })
+            .catch(error => { if (error.name !== "AbortError") setCanReviewApprovals(false); });
+        return () => controller.abort();
+    }, [token, navigate]);
 
-        const loadDashboard = async () => {
-            try {
-                const [userRes, usersRes, projectRes, issueRes, sprintRes, summaryRes] =
-                    await Promise.all([
-                        fetch("http://localhost:8080/api/users/me", { headers }),
-                        fetch("http://localhost:8080/api/users", { headers }),
-                        fetch("http://localhost:8080/api/projects", { headers }),
-                        fetch("http://localhost:8080/api/issues", { headers }),
-                        fetch("http://localhost:8080/api/sprints", { headers }),
-                        fetch("http://localhost:8080/api/dashboard/summary", { headers })
-                    ]);
+    useEffect(() => {
+        if (!token) return undefined;
+        const projectsController = new AbortController();
+        const sprintsController = new AbortController();
+        requestJson("/api/projects", token, projectsController.signal)
+            .then(data => setProjects({ data: Array.isArray(data) ? data : [], loading: false, error: "" }))
+            .catch(error => { if (error.name !== "AbortError") setProjects({ data: [], loading: false, error: error.message }); });
+        requestJson("/api/sprints", token, sprintsController.signal)
+            .then(data => setSprints({ data: Array.isArray(data) ? data : [], loading: false, error: "" }))
+            .catch(error => { if (error.name !== "AbortError") setSprints({ data: [], loading: false, error: error.message }); });
+        return () => { projectsController.abort(); sprintsController.abort(); };
+    }, [token]);
 
-                if (!userRes.ok) {
-                    throw new Error("Unauthorized");
-                }
+    const effectiveProjectId = isAdmin ? projectId : (projectId || (projects.data.length ? String(projects.data[0].id) : ""));
+    const dashboardEnabled = isAdmin || Boolean(effectiveProjectId || sprintId);
+    const query = useMemo(() => {
+        const params = new URLSearchParams();
+        if (effectiveProjectId) params.set("projectId", effectiveProjectId);
+        if (sprintId) params.set("sprintId", sprintId);
+        return params.toString();
+    }, [effectiveProjectId, sprintId]);
+    const sprintQuery = effectiveProjectId ? `projectId=${encodeURIComponent(effectiveProjectId)}` : "";
+    const overview = useDashboardRequest("/api/dashboard/overview", token, query, dashboardEnabled);
+    const projectProgress = useDashboardRequest("/api/dashboard/project-progress", token, query, dashboardEnabled);
+    const workload = useDashboardRequest("/api/dashboard/workload", token, query, dashboardEnabled);
+    const testing = useDashboardRequest("/api/dashboard/testing", token, query, dashboardEnabled);
+    const bottlenecks = useDashboardRequest("/api/dashboard/bottlenecks", token, query, dashboardEnabled);
+    const activeSprints = useDashboardRequest("/api/dashboard/sprints", token, sprintQuery, dashboardEnabled);
+    const workloadRisk = useDashboardRequest("/api/dashboard/workload-risk", token, query, dashboardEnabled);
+    const burndown = useDashboardRequest(
+        sprintId ? `/api/reports/sprints/${encodeURIComponent(sprintId)}/burndown` : "",
+        token,
+        "",
+        Boolean(sprintId)
+    );
 
-                if (!summaryRes.ok) throw new Error("Could not load dashboard analytics.");
-                const userData = await userRes.json();
-                const summaryData = await summaryRes.json();
-                const userList = usersRes.ok ? asList(await usersRes.json()) : [];
-                const projectList = projectRes.ok ? asList(await projectRes.json()) : [];
-                const issueList = issueRes.ok ? asList(await issueRes.json()) : [];
-                const sprintList = sprintRes.ok ? asList(await sprintRes.json()) : [];
+    const visibleSprints = useMemo(() => (sprints.data || []).filter(sprint =>
+        !effectiveProjectId || String(sprint.project?.id ?? sprint.projectId ?? "") === String(effectiveProjectId)
+    ), [sprints.data, effectiveProjectId]);
 
-                setUser(userData);
-                setUsers(userList);
-                setProjects(projectList);
-                setIssues(issueList);
-                setSprints(sprintList);
-                setSummary(summaryData);
+    const scope = sprintId
+        ? `${visibleSprints.find(sprint => String(sprint.id) === String(sprintId))?.name || `Sprint ${sprintId}`} · filtered view`
+        : effectiveProjectId
+            ? `${projects.data.find(project => String(project.id) === String(effectiveProjectId))?.name || "Selected project"} · filtered view`
+            : isAdmin ? "All projects · global view" : "Choose an accessible project";
 
-                if (userData.role === "TESTER") {
-                    setTesterQueue(issueList.filter(issue =>
-                        ["READY_FOR_TESTING", "TESTING"].includes(issue.status) &&
-                        String(issue.tester?.id ?? issue.testerId ?? "") === String(userData.id)
-                    ));
-                }
+    const openTask = id => navigate(`/issues?issueId=${encodeURIComponent(id)}`);
 
-                if (userData.role === "ADMIN" && issueList.length > 0) {
-                    const logResults = await Promise.all(
-                        issueList.slice(0, 10).map(issue =>
-                            fetch(
-                                `http://localhost:8080/api/audit-logs/issue/${issue.id}`,
-                                { headers }
-                            )
-                                .then(response =>
-                                    response.ok ? response.json() : []
-                                )
-                                .catch(() => [])
-                        )
-                    );
-
-                    const logs = logResults
-                        .flat()
-                        .sort(
-                            (a, b) =>
-                                new Date(b.createdAt) -
-                                new Date(a.createdAt)
-                        )
-                        .slice(0, 8);
-
-                    setAuditLogs(logs);
-                }
-            } catch (error) {
-                console.error("Dashboard loading error:", error);
-                setError(error.message || "Could not load dashboard data.");
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        loadDashboard();
-    }, [navigate]);
-
-    if (loading) {
-        return (
-            <div className="flex min-h-[60vh] items-center justify-center">
-                <div className="text-center">
-                    <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-gray-700 border-t-blue-500" />
-                    <p className="mt-4 text-sm text-gray-500">
-                        Loading dashboard...
-                    </p>
+    return <main className="df-dashboard smart-dashboard">
+        <header className="sd-header">
+            <div>
+                <p className="sd-eyebrow"><span /> ENGINEERING INTELLIGENCE</p>
+                <h1>{roleDashboard.title}</h1>
+                <p>{roleDashboard.description}</p>
+            </div>
+            <div className="sd-header-meta">
+                <span className="sd-scope">{scope}</span>
+                <span className="sd-greeting">{user ? `Welcome, ${user.name}` : userError ? "Profile unavailable" : "Loading profile…"}</span>
+                <div className="sd-actions">
+                    <button type="button" className="sd-button sd-button-quiet" onClick={() => navigate(user?.role === "TESTER" ? "/testing" : "/issues")}>{user?.role === "TESTER" ? "Testing queue" : "Browse tasks"} <span aria-hidden="true">↗</span></button>
+                    <button type="button" className="sd-button sd-button-primary" onClick={() => navigate("/private-teams")}>My Teams <span aria-hidden="true">→</span></button>
                 </div>
             </div>
-        );
-    }
+        </header>
 
-    if (error) {
-        return <main role="alert" className="mx-auto max-w-3xl rounded-xl border border-red-500/30 bg-red-500/10 p-6 text-red-300">{error}</main>;
-    }
+        {canReviewApprovals && <section id="pending-approvals" className="mb-6 scroll-mt-24 rounded-2xl border border-violet-400/20 bg-gradient-to-br from-violet-500/[0.08] to-blue-500/[0.04] p-5 sm:p-6" aria-labelledby="pending-approvals-heading">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div><p className="sd-kicker">REVIEW QUEUE</p><h2 id="pending-approvals-heading" className="text-xl font-semibold text-white">Pending approvals</h2><p className="mt-1 text-sm text-gray-400">Testing passed. Review work waiting for your authorized decision.</p></div>
+                <div className="flex gap-2 text-xs"><span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-3 py-1.5 text-violet-200">Team Lead · {approvalQueue.data?.teamLeadPendingCount ?? "—"}</span><span className="rounded-full border border-blue-400/20 bg-blue-400/10 px-3 py-1.5 text-blue-200">Manager · {approvalQueue.data?.projectManagerPendingCount ?? "—"}</span></div>
+            </div>
+            {approvalQueue.loading && !approvalQueue.data ? <p role="status" className="rounded-xl border border-gray-800 bg-gray-950/40 p-4 text-sm text-gray-400">Loading approval queue…</p>
+                : approvalQueue.error && !approvalQueue.data ? <div role="alert" className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-200">Could not load pending approvals: {approvalQueue.error}<button type="button" onClick={() => void loadApprovals()} className="ml-3 underline underline-offset-2">Retry</button></div>
+                    : !approvalQueue.data?.pendingApprovals?.length ? <p className="rounded-xl border border-gray-800 bg-gray-950/40 p-4 text-sm text-gray-400">No tasks are waiting for your approval in projects you can manage.</p>
+                        : <div className="grid gap-3">{approvalQueue.data.pendingApprovals.map(item => <article key={`${item.taskId}-${item.stage}`} className="rounded-xl border border-gray-800 bg-gray-950/55 p-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold text-gray-100">{item.taskName || `Task #${item.taskId}`}</h3><span className="rounded-full bg-gray-800 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-violet-200">{item.stage === "TEAM_LEAD" ? "Team Lead review" : "Manager review"}</span></div><p className="mt-1 text-sm text-gray-400">{item.projectName || "Project unavailable"} · Developer: {item.developerName || "Unassigned"} · Tester: {item.testerName || "Unavailable"}</p><p className="mt-1 text-xs text-gray-500">Test {item.testingResult || "result unavailable"} · completed {formatApprovalDate(item.testingCompletedAt)} · waiting {formatWait(item.waitingSeconds)}{item.teamLeadName ? ` · Team Lead: ${item.teamLeadName}${item.teamLeadApprovedAt ? `, ${formatApprovalDate(item.teamLeadApprovedAt)}` : ""}` : ""}</p></div><span className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200">PASS</span></div>
+                            <div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => openTask(item.taskId)} className="sd-button sd-button-quiet">View Task</button><button type="button" disabled={approvalSaving} onClick={() => void decideApproval(item, "APPROVED")} className="sd-button sd-button-primary disabled:opacity-50">{item.stage === "PROJECT_MANAGER" ? "Approve & Resolve" : "Approve"}</button><button type="button" disabled={approvalSaving} onClick={() => { setRejectingApproval(item); setRejectionRemark(""); setApprovalError(""); }} className="rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-200 hover:bg-red-500/10 disabled:opacity-50">Reject</button></div>
+                        </article>)}</div>}
+            {approvalMessage && <p role="status" className="mt-3 text-sm text-emerald-300">{approvalMessage}</p>}{approvalError && !rejectingApproval && <p role="alert" className="mt-3 text-sm text-red-300">{approvalError}</p>}
+        </section>}
 
-    let roleDashboard;
-    if (user?.role === "ADMIN") {
-        roleDashboard = <AdminDashboard navigate={navigate} users={users} projects={projects} issues={issues} sprints={sprints} auditLogs={auditLogs} />;
-    } else if (user?.role === "PROJECT_MANAGER") {
-        roleDashboard = <ManagerDashboard user={user} projects={projects} issues={issues} sprints={sprints} />;
-    } else if (user?.role === "DEVELOPER") {
-        roleDashboard = <DeveloperDashboard user={user} issues={issues} sprints={sprints} />;
-    } else if (user?.role === "TESTER") {
-        roleDashboard = <TesterDashboard issues={testerQueue} navigate={navigate} />;
-    } else {
-        roleDashboard = <ViewerDashboard projects={projects} issues={issues} sprints={sprints} />;
-    }
+        <section className="sd-filterbar" aria-label="Dashboard filters">
+            <div><label htmlFor="dashboard-project">Project</label><select id="dashboard-project" value={effectiveProjectId} onChange={event => { setProjectId(event.target.value); setSprintId(""); }}>
+                {isAdmin ? <option value="">All projects</option> : <option value="">Choose a project</option>}{projects.data.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>{projects.loading && <small>Loading projects…</small>}{projects.error && <small className="sd-error-text">{projects.error}</small>}</div>
+            <div><label htmlFor="dashboard-sprint">Sprint</label><select id="dashboard-sprint" value={sprintId} onChange={event => setSprintId(event.target.value)} disabled={sprints.loading || !visibleSprints.length}>
+                <option value="">All sprints</option>{visibleSprints.map(sprint => <option key={sprint.id} value={sprint.id}>{sprint.name}</option>)}
+            </select>{sprints.loading && <small>Loading sprints…</small>}{sprints.error && <small className="sd-error-text">{sprints.error}</small>}</div>
+            {isAdmin && <button type="button" className="sd-reset" onClick={() => { setProjectId(""); setSprintId(""); }}>Clear filters</button>}
+            <p>{isAdmin ? "Metrics follow the selected scope; administrators can view global metrics." : "Metrics are limited to projects and sprints your account can access."}</p>
+        </section>
 
-    return <div className="mx-auto max-w-7xl space-y-8"><DashboardAnalytics summary={summary} />{roleDashboard}</div>;
+        {rejectingApproval && <div role="presentation" className="fixed inset-0 z-[80] grid place-items-center bg-black/70 p-4" onMouseDown={event => { if (event.target === event.currentTarget && !approvalSaving) setRejectingApproval(null); }}><section role="dialog" aria-modal="true" aria-labelledby="approval-reject-title" className="w-full max-w-lg rounded-2xl border border-gray-700 bg-gray-900 p-5 shadow-2xl sm:p-6"><p className="text-xs font-semibold uppercase tracking-wider text-red-300">Required rejection note</p><h2 id="approval-reject-title" className="mt-2 text-lg font-semibold text-white">Return {rejectingApproval.taskName || `Task #${rejectingApproval.taskId}`} to the developer?</h2><p className="mt-2 text-sm text-gray-400">A remark is required and will be recorded with this decision.</p><label className="mt-4 block text-sm text-gray-300" htmlFor="approval-rejection-remark">Remark<textarea id="approval-rejection-remark" rows={4} value={rejectionRemark} onChange={event => setRejectionRemark(event.target.value)} className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-gray-100 outline-none focus:border-violet-400" /></label>{approvalError && <p role="alert" className="mt-2 text-sm text-red-300">{approvalError}</p>}<div className="mt-5 flex justify-end gap-2"><button type="button" disabled={approvalSaving} onClick={() => { setRejectingApproval(null); setApprovalError(""); }} className="sd-button sd-button-quiet">Cancel</button><button type="button" disabled={approvalSaving || !rejectionRemark.trim()} onClick={() => void decideApproval(rejectingApproval, "REJECTED")} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{approvalSaving ? "Saving…" : "Reject task"}</button></div></section></div>}
+
+        {!isAdmin && !projects.loading && !projects.data.length && !projects.error && <div role="status" className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-700 bg-gray-900/70 p-4 text-sm text-gray-300"><span>No projects are available to your account. Check your team membership or ask a team manager about project access.</span><button type="button" className="sd-text-button" onClick={() => navigate("/private-teams")}>Open My Teams <span aria-hidden="true">→</span></button></div>}
+        <div className="sd-overview-grid">
+            <SectionState state={overview}>
+                {data => <>
+                    <div className="sd-section-head"><div><p className="sd-kicker">DELIVERY OVERVIEW</p><h2>Work at a glance</h2></div><span className="sd-section-caption">LIVE TASK DATA</span></div>
+                    <div className="sd-kpi-grid">
+                        <Metric label="Total tasks" value={data.totalTasks} note="In the selected scope" tone="blue" />
+                        <Metric label="Completed" value={data.completedTasks} note="Status: Resolved" tone="green" />
+                        <Metric label="In progress" value={data.inProgressTasks} note="Status: In Progress" tone="cyan" />
+                        <Metric label="Overdue (sprint)" value={data.overdueTasks} note="Unresolved in ended sprints" tone="amber" />
+                        <Metric label="Completion rate" value={`${data.completionRate}%`} note={`${data.completedTasks} of ${data.totalTasks} resolved`} tone="violet" />
+                    </div>
+                    <div className="sd-status-block"><div className="sd-section-head sd-subhead"><div><p className="sd-kicker">WORKFLOW</p><h3>Task status distribution</h3></div><span>{data.totalTasks} tasks</span></div>
+                        {data.totalTasks ? <StatusDistribution statuses={data.statusDistribution || []} total={data.totalTasks} /> : <p className="sd-inline-empty">No task status data yet.</p>}
+                    </div>
+                </>}
+            </SectionState>
+
+            <SectionState state={testing} empty={!testing.data?.completedExecutions} emptyText="No completed PASS or FAIL executions in this scope yet.">
+                {data => <div className="sd-testing-content"><div className="sd-section-head"><div><p className="sd-kicker">QUALITY SIGNAL</p><h2>Testing outcomes</h2></div><span className="sd-ring-mark">✓</span></div>
+                    <div className="sd-testing-rate"><strong>{data.passRate}%</strong><span>pass rate</span></div>
+                    <div className="sd-outcome-track" aria-label={`Passed ${data.passedExecutions}, failed ${data.failedExecutions}`}><span style={{ width: `${data.passRate}%` }} /></div>
+                    <div className="sd-outcome-grid"><div><span>Passed</span><strong>{data.passedExecutions}</strong></div><div><span>Failed</span><strong>{data.failedExecutions}</strong></div><div><span>Denominator</span><strong>{data.completedExecutions}</strong></div></div>
+                    <p className="sd-footnote">{data.denominator}</p>
+                </div>}
+            </SectionState>
+        </div>
+
+        <div className="sd-content-grid">
+            <SectionState state={projectProgress} empty={!projectProgress.data?.projects?.length} emptyText="No project progress to show in this scope.">
+                {data => <div className="sd-panel-content"><div className="sd-section-head"><div><p className="sd-kicker">PORTFOLIO</p><h2>Project progress</h2><p>Resolved tasks / total tracked tasks</p></div></div>
+                    <div className="sd-project-list">{data.projects.map(project => <div className="sd-project-row" key={project.projectId}>
+                        <div className="sd-project-title"><span>{String(project.projectName || "P").trim().charAt(0).toUpperCase()}</span><div><strong>{project.projectName}</strong><small>{project.completedIssues} of {project.totalIssues} resolved</small></div></div>
+                        <div className="sd-progress"><strong>{project.completionPercent}%</strong><div><span style={{ width: `${project.completionPercent}%` }} /></div></div>
+                    </div>)}</div>
+                </div>}
+            </SectionState>
+
+            <SectionState state={workload} empty={!workload.data?.members?.length} emptyText="No developer or tester assignments in this scope.">
+                {data => <div className="sd-panel-content"><div className="sd-section-head"><div><p className="sd-kicker">TEAM CAPACITY</p><h2>Assignment workload</h2><p>Current assigned task counts, grouped by role</p></div></div>
+                    <div className="sd-workload-list">{data.members.slice(0, 8).map(person => <div className="sd-workload-row" key={`${person.role}-${person.userId}`}>
+                        <Avatar name={person.name} src={person.avatarUrl} size={38} />
+                        <div className="sd-workload-person"><div><strong>{person.name}</strong><span>{person.role.replaceAll("_", " ")}</span></div><div className="sd-workload-track"><span style={{ width: `${Math.max(4, person.assignedIssues * 100 / Math.max(1, ...data.members.map(member => member.assignedIssues)))}%` }} /></div></div>
+                        <strong className="sd-assignment-count">{person.assignedIssues}<small>tasks</small></strong>
+                    </div>)}</div>
+                </div>}
+            </SectionState>
+        </div>
+
+        <div className="sd-content-grid sd-content-grid-wide">
+            <SectionState state={activeSprints} empty={!activeSprints.data?.activeSprints?.length} emptyText="No active sprint in this scope.">
+                {data => <div className="sd-panel-content"><div className="sd-section-head"><div><p className="sd-kicker">CURRENT CYCLE</p><h2>Active sprint progress</h2><p>Live counts use current issue status; burndown uses recorded snapshots only.</p></div></div>
+                    <div className="sd-sprint-list">{data.activeSprints.map(sprint => <article className={`sd-sprint-card ${String(sprint.sprintId) === String(sprintId) ? "is-selected" : ""}`} key={sprint.sprintId}>
+                        <div className="sd-sprint-top"><div><strong>{sprint.sprintName}</strong><small>{sprint.projectName || "Project"} · {formatDate(sprint.startDate)} – {formatDate(sprint.endDate)}</small></div><span>{sprint.status.replaceAll("_", " ")}</span></div>
+                        <div className="sd-sprint-metrics"><strong>{sprint.completionRate}%<small>complete</small></strong><span>{sprint.completedTasks} / {sprint.totalTasks} resolved</span></div>
+                        <div className="sd-progress"><div><span style={{ width: `${sprint.completionRate}%` }} /></div></div>
+                        <button type="button" className="sd-text-button" onClick={() => setSprintId(String(sprint.sprintId))}>View burndown history <span aria-hidden="true">→</span></button>
+                    </article>)}</div>
+                </div>}
+            </SectionState>
+            <SectionState state={burndown} empty={!burndown.data?.snapshots?.length} emptyText={sprintId ? "No recorded burndown snapshots yet. Tracking begins when the first snapshot is collected." : "Choose a sprint to view its recorded burndown history."}>
+                {data => <BurndownChart data={data} />}
+            </SectionState>
+        </div>
+
+        <SectionState state={workloadRisk} empty={!workloadRisk.data?.overdueTasks?.length && !workloadRisk.data?.approachingDeadlineTasks?.length && !workloadRisk.data?.unresolvedByAssignee?.length && !workloadRisk.data?.sprintRisks?.length} emptyText="No unresolved deadline or sprint workload risks in this scope.">
+            {data => <div className="sd-panel-content"><div className="sd-section-head"><div><p className="sd-kicker">CAPACITY & DELIVERY RISK</p><h2>Sprint workload & risk</h2><p>Prioritize unresolved work by deadline, owner, and sprint exposure.</p></div><span className="sd-section-caption">AS OF {formatDate(data.asOf)}</span></div>
+                <div className="sd-risk-deadlines">
+                    <RiskTaskList title="Overdue" tasks={data.overdueTasks} tone="overdue" onOpen={openTask} emptyText="No unresolved tasks are past due." />
+                    <RiskTaskList title="Due in the next 7 days" tasks={data.approachingDeadlineTasks} tone="approaching" onOpen={openTask} emptyText="No unresolved tasks are approaching their due date." />
+                </div>
+                <div className="sd-risk-columns">
+                    <section className="sd-risk-subsection"><div className="sd-risk-subhead"><h3>Unresolved by assignee</h3><span>Primary task owner</span></div>
+                        {data.unresolvedByAssignee?.length ? <div className="sd-risk-assignees">{data.unresolvedByAssignee.slice(0, 8).map(person => <div className="sd-risk-assignee" key={person.userId ?? "unassigned"}>
+                            {person.userId ? <Avatar name={person.name} src={person.avatarUrl} size={32} /> : <span className="sd-risk-unassigned" aria-hidden="true">—</span>}
+                            <div className="sd-risk-assignee-main"><div><strong>{person.name}</strong><span>{person.unresolvedTasks} open</span></div><div className="sd-workload-track"><span style={{ width: `${Math.max(4, person.unresolvedTasks * 100 / Math.max(1, ...data.unresolvedByAssignee.map(item => item.unresolvedTasks)))}%` }} /></div></div>
+                        </div>)}</div> : <p className="sd-inline-empty">No unresolved tasks in this scope.</p>}
+                    </section>
+                    <section className="sd-risk-subsection"><div className="sd-risk-subhead"><h3>Active sprint risk</h3><span>Unresolved / total · end date</span></div>
+                        {data.sprintRisks?.length ? <div className="sd-risk-sprints">{data.sprintRisks.map(sprint => <button type="button" className="sd-risk-sprint" key={sprint.sprintId} onClick={() => setSprintId(String(sprint.sprintId))}>
+                            <span className={`sd-risk-pill sd-risk-${String(sprint.riskLevel).toLowerCase()}`}>{labelStatus(sprint.riskLevel)}</span><strong>{sprint.sprintName}</strong><small>{sprint.projectName || "Project"} · ends {formatDate(sprint.endDate)}</small>
+                            <span className="sd-risk-sprint-count">{sprint.unresolvedTasks} unresolved <b>·</b> {sprint.overdueTasks} overdue <b>·</b> {sprint.approachingDeadlineTasks} due soon</span>
+                            <span className="sd-risk-progress"><i style={{ width: `${sprint.completionRate}%` }} /></span><small>{sprint.completedTasks}/{sprint.totalTasks} resolved ({sprint.completionRate}%)</small>
+                        </button>)}</div> : <p className="sd-inline-empty">No active sprints in this scope.</p>}
+                    </section>
+                </div>
+                <p className="sd-footnote">{data.definitions} Deadline lists show at most 10 tasks each, ordered by nearest due date.</p>
+            </div>}
+        </SectionState>
+        <SectionState state={bottlenecks} empty={!bottlenecks.data?.blockedTasks?.length && !bottlenecks.data?.overdueTasks?.length} emptyText="No blocked or past-sprint-end tasks in this scope.">
+            {data => <div className="sd-panel-content"><div className="sd-section-head"><div><p className="sd-kicker">NEEDS ATTENTION</p><h2>Bottlenecks</h2><p>Open blockers and unresolved work whose sprint end date has passed.</p></div></div>
+                <div className="sd-bottleneck-grid">
+                    <div><h3>Blocked tasks <span>{data.blockedTasks?.length || 0}</span></h3>{data.blockedTasks?.length ? data.blockedTasks.map((task, index) => <button type="button" className="sd-task-link" key={`${task.taskId}-${task.blockingTaskId}-${index}`} onClick={() => openTask(task.taskId)}>
+                        <span className="sd-task-id">#{task.taskId}</span><span className="sd-task-copy"><strong>{task.title || `Task #${task.taskId}`}</strong><small>Blocked by <b>#{task.blockingTaskId}</b> · {task.blockingTaskTitle}</small></span><span className="sd-link-arrow" aria-hidden="true">↗</span>
+                    </button>) : <p className="sd-inline-empty">No unresolved blockers.</p>}</div>
+                    <div><h3>Past sprint end <span>{data.overdueTasks?.length || 0}</span></h3>{data.overdueTasks?.length ? data.overdueTasks.map(task => <button type="button" className="sd-task-link" key={task.taskId} onClick={() => openTask(task.taskId)}>
+                        <span className="sd-task-id">#{task.taskId}</span><span className="sd-task-copy"><strong>{task.title || `Task #${task.taskId}`}</strong><small>{task.sprintName} ended {formatDate(task.sprintEndDate)}{task.assigneeName ? ` · ${task.assigneeName}` : ""}</small></span><span className="sd-link-arrow" aria-hidden="true">↗</span>
+                    </button>) : <p className="sd-inline-empty">No unresolved tasks in ended sprints.</p>}</div>
+                </div>
+                <p className="sd-footnote">{data.overdueDefinition}</p>
+            </div>}
+        </SectionState>
+    </main>;
 }
 
-function DashboardAnalytics({ summary }) {
-    const statuses = summary?.statusDistribution || [];
-    const projects = summary?.projectProgress || [];
-    const workload = summary?.teamWorkload || [];
-    const maxStatus = Math.max(1, ...statuses.map(item => item.count));
-    const maxWorkload = Math.max(1, ...workload.map(item => item.assignedIssues));
-    const cards = [
-        ["Projects", summary?.totalProjects ?? 0, `${summary?.totalSprints ?? 0} sprints`],
-        ["Tracked issues", summary?.totalIssues ?? 0, `${summary?.activeIssues ?? 0} active`],
-        ["Completed", summary?.completedIssues ?? 0, summary?.totalIssues ? `${Math.round(summary.completedIssues * 100 / summary.totalIssues)}% completion` : "No issues yet"],
-        ["In testing", summary?.testingIssues ?? 0, `${summary?.activeSprints ?? 0} active sprints`],
-    ];
-    return <section className="space-y-5" aria-label="Engineering analytics">
-        <div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-400">Engineering overview</p><h1 className="mt-2 text-2xl font-semibold tracking-tight text-white">Delivery at a glance</h1><p className="mt-1 text-sm text-gray-400">Live metrics from your projects, issues, sprints, and team assignments.</p></div>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([title, value, hint]) => <article key={title} className="rounded-2xl border border-gray-800 bg-gradient-to-br from-gray-900 to-gray-950 p-5 shadow-lg shadow-black/10"><p className="text-sm text-gray-400">{title}</p><p className="mt-3 text-3xl font-semibold tracking-tight text-white">{value}</p><p className="mt-2 text-xs text-gray-500">{hint}</p></article>)}</div>
-        <div className="grid gap-5 xl:grid-cols-3">
-            <section className="rounded-2xl border border-gray-800 bg-gray-900 p-5"><div className="mb-5"><h2 className="font-semibold text-white">Issue status</h2><p className="mt-1 text-xs text-gray-500">Current distribution across the workspace</p></div>{statuses.length === 0 ? <p className="rounded-xl border border-dashed border-gray-800 p-5 text-sm text-gray-500">No issue status data yet.</p> : <div className="space-y-4">{statuses.map(item => <div key={item.status}><div className="mb-1.5 flex justify-between gap-3 text-xs"><span className="text-gray-300">{String(item.status || "Unknown").replaceAll("_", " ")}</span><span className="text-gray-500">{item.count}</span></div><div className="h-2 overflow-hidden rounded-full bg-gray-800"><div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-cyan-400" style={{ width: `${Math.max(3, item.count * 100 / maxStatus)}%` }} /></div></div>)}</div>}</section>
-            <section className="rounded-2xl border border-gray-800 bg-gray-900 p-5 xl:col-span-2"><div className="mb-5"><h2 className="font-semibold text-white">Project progress</h2><p className="mt-1 text-xs text-gray-500">Resolved issues as a share of each project’s tracked work</p></div>{projects.length === 0 ? <p className="rounded-xl border border-dashed border-gray-800 p-5 text-sm text-gray-500">No projects to report yet.</p> : <div className="space-y-4">{projects.slice(0, 6).map(project => <div key={project.projectId}><div className="mb-1.5 flex items-center justify-between gap-4"><span className="truncate text-sm text-gray-200">{project.projectName}</span><span className="shrink-0 text-xs text-gray-500">{project.completedIssues}/{project.totalIssues} · {project.completionPercent}%</span></div><div className="h-2 overflow-hidden rounded-full bg-gray-800"><div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-blue-400" style={{ width: `${project.completionPercent}%` }} /></div></div>)}</div>}</section>
-            <section className="rounded-2xl border border-gray-800 bg-gray-900 p-5 xl:col-span-3"><div className="mb-5"><h2 className="font-semibold text-white">Team workload</h2><p className="mt-1 text-xs text-gray-500">Issues assigned to developers and testers</p></div>{workload.length === 0 ? <p className="rounded-xl border border-dashed border-gray-800 p-5 text-sm text-gray-500">No active assignments yet.</p> : <div className="grid gap-4 md:grid-cols-2">{workload.slice(0, 8).map(person => <div key={`${person.role}-${person.userId}`} className="rounded-xl border border-gray-800 bg-gray-950/70 p-4"><div className="mb-3 flex items-center justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><Avatar name={person.name} src={person.avatarUrl} size={36} /><div className="min-w-0"><p className="truncate text-sm font-medium text-gray-200">{person.name}</p><p className="mt-1 text-[11px] uppercase tracking-wide text-gray-500">{person.role.replaceAll("_", " ")}</p></div></div><span className="text-sm font-semibold text-blue-300">{person.assignedIssues}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-gray-800"><div className="h-full rounded-full bg-blue-500" style={{ width: `${Math.max(person.assignedIssues ? 5 : 0, person.assignedIssues * 100 / maxWorkload)}%` }} /></div></div>)}</div>}</section>
-        </div>
+function SectionState({ state, empty, emptyText, children }) {
+    if (state.disabled) return null;
+    return <section className="sd-panel">
+        {state.loading ? <div className="sd-state" role="status"><span className="sd-spinner" />Loading this section…</div>
+            : state.error ? <div className="sd-state sd-state-error" role="alert"><strong>Could not load this section</strong><span>{state.error}</span></div>
+                : empty ? <div className="sd-state sd-state-empty">{emptyText}</div>
+                    : state.data == null ? <div className="sd-state sd-state-error" role="alert">No dashboard data was returned for this section.</div>
+                        : children(state.data)}
     </section>;
 }
-function TesterDashboard({ issues, navigate }) {
-    const ready=issues.filter(i=>i.status==="READY_FOR_TESTING");
-    const active=issues.filter(i=>i.status==="TESTING");
-    const passed=issues.filter(i=>(i.testResult||i.result)==="PASSED").length;
-    const failed=issues.filter(i=>(i.testResult||i.result)==="FAILED").length;
-    return <main className="mx-auto max-w-7xl space-y-7"><header><p className="text-sm font-semibold uppercase tracking-wide text-blue-400">TESTER WORKSPACE</p><h1 className="mt-2 text-3xl font-bold text-white">Testing Workspace</h1><p className="mt-2 text-gray-400">Your assigned testing work and recent outcomes.</p></header><section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat title="Ready for Testing" value={ready.length} description="Assigned and waiting" icon="◷"/><DashboardStat title="Currently Testing" value={active.length} description="Active test executions" icon="✓"/><DashboardStat title="Passed" value={passed} description="Passed items in your queue" icon="✓"/><DashboardStat title="Failed" value={failed} description="Failed items in your queue" icon="!"/></section><section className="rounded-xl border border-gray-800 bg-gray-900 p-5"><div className="mb-4 flex items-center justify-between"><div><h2 className="text-lg font-semibold text-white">My Testing Queue</h2><p className="mt-1 text-sm text-gray-500">Issues assigned to your tester account.</p></div><button onClick={()=>navigate("/my-tests")} className="rounded-lg border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800">View all</button></div>{issues.length===0?<EmptyState text="No testing issues are assigned to you."/>:<div className="space-y-2">{issues.slice(0,6).map(issue=><button key={issue.id} onClick={()=>navigate(`/testing/${issue.id}`)} className="flex w-full flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950 p-4 text-left hover:border-blue-500/50"><span><span className="block font-medium text-white">{issue.title||`Issue #${issue.id}`}</span><span className="mt-1 block text-xs text-gray-500">{issue.project?.name||"Project unavailable"} · {issue.priority||"—"}</span></span><span className="rounded-full bg-gray-800 px-3 py-1 text-xs text-gray-300">{String(issue.status||"UNKNOWN").replaceAll("_"," ")}</span></button>)}</div>}</section></main>;
+
+function RiskTaskList({ title, tasks = [], tone, onOpen, emptyText }) {
+    return <section className={`sd-risk-deadline sd-risk-deadline-${tone}`}><div className="sd-risk-subhead"><h3>{title}</h3><span>{tasks.length}</span></div>
+        {tasks.length ? tasks.map(task => <button type="button" className="sd-risk-task" key={task.taskId} onClick={() => onOpen(task.taskId)}>
+            <span className="sd-task-id">#{task.taskId}</span><span className="sd-task-copy"><strong>{task.title || `Task #${task.taskId}`}</strong><small>{formatDate(task.dueDate)} · {task.assigneeName || "Unassigned"} · {task.sprintName || task.projectName || "No sprint/project"}</small></span><span className="sd-risk-task-status">{labelStatus(task.status)}</span>
+        </button>) : <p className="sd-inline-empty">{emptyText}</p>}
+    </section>;
+}
+function Metric({ label, value, note, tone }) {
+    return <article className={`sd-metric sd-metric-${tone}`}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>;
 }
 
-function AdminDashboard({
-    navigate,
-    users,
-    projects,
-    issues,
-    sprints,
-    auditLogs
-}) {
-    const admins = users.filter(user => user.role === "ADMIN").length;
-    const managers = users.filter(
-        user => user.role === "PROJECT_MANAGER"
-    ).length;
-    const developers = users.filter(
-        user => user.role === "DEVELOPER"
-    ).length;
-    const viewers = users.filter(user => user.role === "VIEWER").length;
-
-    const openIssues = issues.filter(
-        issue =>
-            issue.status !== "RESOLVED" &&
-            issue.status !== "CLOSED"
-    ).length;
-
-    const completedIssues = issues.filter(
-        issue =>
-            issue.status === "RESOLVED" ||
-            issue.status === "CLOSED"
-    ).length;
-
-    const inProgressIssues = issues.filter(
-        issue => issue.status === "IN_PROGRESS"
-    ).length;
-
-    const reviewIssues = issues.filter(
-        issue => issue.status === "CODE_REVIEW"
-    ).length;
-
-    const testingIssues = issues.filter(
-        issue => issue.status === "TESTING"
-    ).length;
-
-    const activeSprints = sprints.filter(
-        sprint => sprint.status === "ACTIVE"
-    ).length;
-
-    const completedProjects = projects.filter(
-        project => project.status === "COMPLETED"
-    ).length;
-
-    const activeProjects = projects.filter(
-        project => project.status === "ACTIVE"
-    ).length;
-
-    const issueStatusData = [
-        {
-            label: "Open",
-            value: issues.filter(issue => issue.status === "OPEN").length,
-            style: "bg-blue-500"
-        },
-        {
-            label: "In Progress",
-            value: inProgressIssues,
-            style: "bg-yellow-500"
-        },
-        {
-            label: "Code Review",
-            value: reviewIssues,
-            style: "bg-purple-500"
-        },
-        {
-            label: "Testing",
-            value: testingIssues,
-            style: "bg-orange-500"
-        },
-        {
-            label: "Resolved",
-            value: issues.filter(issue => issue.status === "RESOLVED").length,
-            style: "bg-green-500"
-        },
-        {
-            label: "Closed",
-            value: issues.filter(issue => issue.status === "CLOSED").length,
-            style: "bg-gray-500"
-        }
-    ];
-
-    const maxIssueCount = Math.max(
-        ...issueStatusData.map(item => item.value),
-        1
-    );
-
-    return (
-        <div className="space-y-8">
-            <div>
-                <p className="text-sm font-medium text-blue-400">
-                    ADMINISTRATION
-                </p>
-                <h1 className="mt-1 text-3xl font-bold text-white">
-                    System Overview
-                </h1>
-                <p className="mt-2 text-gray-500">
-                    Monitor and manage the entire DevFlow engineering workspace.
-                </p>
-            </div>
-
-            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-                <DashboardStat
-                    title="Total Users"
-                    value={users.length}
-                    description="Registered accounts"
-                    icon="👥"
-                />
-                <DashboardStat
-                    title="Projects"
-                    value={projects.length}
-                    description={`${activeProjects} active projects`}
-                    icon="📁"
-                />
-                <DashboardStat
-                    title="Open Issues"
-                    value={openIssues}
-                    description={`${completedIssues} completed`}
-                    icon="🐛"
-                />
-                <DashboardStat
-                    title="Active Sprints"
-                    value={activeSprints}
-                    description={`${sprints.length} total sprints`}
-                    icon="⚡"
-                />
-            </div>
-
-            <div className="grid gap-6 xl:grid-cols-3">
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-6 xl:col-span-2">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <h2 className="text-lg font-semibold text-white">
-                                User Distribution
-                            </h2>
-                            <p className="mt-1 text-sm text-gray-500">
-                                Current access levels
-                            </p>
-                        </div>
-
-                        <button
-                            onClick={() => navigate("/team")}
-                            className="rounded-lg border border-gray-700 px-3 py-2 text-xs text-gray-300 transition hover:border-blue-500 hover:bg-blue-500/10 hover:text-blue-400"
-                        >
-                            Manage Users →
-                        </button>
-                    </div>
-
-                    <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                        <RoleCard
-                            title="Administrators"
-                            value={admins}
-                            icon="🛡️"
-                            description="Full system access"
-                            className="border-red-500/20 bg-red-500/5"
-                            textClass="text-red-400"
-                        />
-
-                        <RoleCard
-                            title="Project Managers"
-                            value={managers}
-                            icon="📊"
-                            description="Project management"
-                            className="border-purple-500/20 bg-purple-500/5"
-                            textClass="text-purple-400"
-                        />
-
-                        <RoleCard
-                            title="Developers"
-                            value={developers}
-                            icon="💻"
-                            description="Engineering access"
-                            className="border-green-500/20 bg-green-500/5"
-                            textClass="text-green-400"
-                        />
-
-                        <RoleCard
-                            title="Viewers"
-                            value={viewers}
-                            icon="👁️"
-                            description="Read-only access"
-                            className="border-gray-700 bg-gray-950"
-                            textClass="text-gray-400"
-                        />
-                    </div>
-                </div>
-
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <h2 className="text-lg font-semibold text-white">
-                                Issue Overview
-                            </h2>
-                            <p className="mt-1 text-sm text-gray-500">
-                                Current workflow status
-                            </p>
-                        </div>
-
-                        <button
-                            onClick={() => navigate("/issues")}
-                            className="text-xs text-blue-400 hover:text-blue-300"
-                        >
-                            View all →
-                        </button>
-                    </div>
-
-                    <div className="mt-6 space-y-4">
-                        {issueStatusData.map(item => (
-                            <div key={item.label}>
-                                <div className="mb-2 flex items-center justify-between text-xs">
-                                    <span className="text-gray-400">
-                                        {item.label}
-                                    </span>
-                                    <span className="font-medium text-white">
-                                        {item.value}
-                                    </span>
-                                </div>
-
-                                <div className="h-2 overflow-hidden rounded-full bg-gray-800">
-                                    <div
-                                        className={`h-full rounded-full ${item.style}`}
-                                        style={{
-                                            width: `${Math.max(
-                                                (item.value /
-                                                    maxIssueCount) *
-                                                    100,
-                                                item.value > 0 ? 8 : 0
-                                            )}%`
-                                        }}
-                                    />
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
-
-            <div className="grid gap-6 lg:grid-cols-2">
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <h2 className="text-lg font-semibold text-white">
-                                Project Health
-                            </h2>
-                            <p className="mt-1 text-sm text-gray-500">
-                                Current project status
-                            </p>
-                        </div>
-
-                        <button
-                            onClick={() => navigate("/projects")}
-                            className="text-xs text-blue-400 hover:text-blue-300"
-                        >
-                            View projects →
-                        </button>
-                    </div>
-
-                    <div className="mt-6 space-y-4">
-                        {projects.slice(0, 5).map(project => (
-                            <div
-                                key={project.id}
-                                className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-950 p-4"
-                            >
-                                <div className="min-w-0">
-                                    <p className="truncate font-medium text-white">
-                                        {project.name}
-                                    </p>
-                                    <p className="mt-1 truncate text-xs text-gray-500">
-                                        {project.description ||
-                                            "No description"}
-                                    </p>
-                                </div>
-
-                                <span
-                                    className={`ml-4 shrink-0 rounded-full px-3 py-1 text-xs ${
-                                        project.status === "COMPLETED"
-                                            ? "bg-green-500/10 text-green-400"
-                                            : "bg-blue-500/10 text-blue-400"
-                                    }`}
-                                >
-                                    {project.status || "ACTIVE"}
-                                </span>
-                            </div>
-                        ))}
-
-                        {projects.length === 0 && (
-                            <EmptyState text="No projects available." />
-                        )}
-
-                        {projects.length > 0 && (
-                            <div className="grid grid-cols-2 gap-3 pt-2">
-                                <MiniMetric
-                                    label="Active"
-                                    value={activeProjects}
-                                />
-                                <MiniMetric
-                                    label="Completed"
-                                    value={completedProjects}
-                                />
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <h2 className="text-lg font-semibold text-white">
-                                Sprint Status
-                            </h2>
-                            <p className="mt-1 text-sm text-gray-500">
-                                Current sprint activity
-                            </p>
-                        </div>
-
-                        <button
-                            onClick={() => navigate("/sprints")}
-                            className="text-xs text-blue-400 hover:text-blue-300"
-                        >
-                            View sprints →
-                        </button>
-                    </div>
-
-                    <div className="mt-6 space-y-4">
-                        {sprints.slice(0, 5).map(sprint => (
-                            <div
-                                key={sprint.id}
-                                className="flex items-center justify-between border-b border-gray-800 pb-4"
-                            >
-                                <div>
-                                    <p className="font-medium text-white">
-                                        {sprint.name}
-                                    </p>
-                                    <p className="mt-1 text-xs text-gray-500">
-                                        {sprint.goal || "No sprint goal"}
-                                    </p>
-                                </div>
-
-                                <span
-                                    className={`rounded-full px-3 py-1 text-xs ${
-                                        sprint.status === "ACTIVE"
-                                            ? "bg-green-500/10 text-green-400"
-                                            : "bg-gray-800 text-gray-400"
-                                    }`}
-                                >
-                                    {sprint.status}
-                                </span>
-                            </div>
-                        ))}
-
-                        {sprints.length === 0 && (
-                            <EmptyState text="No sprints available." />
-                        )}
-                    </div>
-                </div>
-            </div>
-
-            <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h2 className="text-lg font-semibold text-white">
-                            Recent System Activity
-                        </h2>
-                        <p className="mt-1 text-sm text-gray-500">
-                            Latest recorded engineering activity
-                        </p>
-                    </div>
-
-                    <button
-                        onClick={() => navigate("/issues")}
-                        className="text-xs text-blue-400 hover:text-blue-300"
-                    >
-                        View activity →
-                    </button>
-                </div>
-
-                <div className="mt-6">
-                    {auditLogs.length === 0 ? (
-                        <EmptyState text="No recent activity available." />
-                    ) : (
-                        <div className="space-y-1">
-                            {auditLogs.map((log, index) => (
-                                <div
-                                    key={`${log.id}-${index}`}
-                                    className="flex items-center gap-4 rounded-lg p-4 transition hover:bg-gray-800/50"
-                                >
-                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-500/10 text-sm text-blue-400">
-                                        {getActivityIcon(log.action)}
-                                    </div>
-
-                                    <div className="min-w-0 flex-1">
-                                        <p className="text-sm text-gray-300">
-                                            {log.details || log.action}
-                                        </p>
-                                        <p className="mt-1 text-xs text-gray-600">
-                                            {formatDate(log.createdAt)}
-                                        </p>
-                                    </div>
-
-                                    <span className="hidden rounded-full bg-gray-800 px-3 py-1 text-xs text-gray-500 sm:block">
-                                        {formatAction(log.action)}
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            <div className="grid gap-5 md:grid-cols-3">
-                <QuickAction
-                    icon="👥"
-                    title="Manage Users"
-                    description="Change roles and access"
-                    onClick={() => navigate("/team")}
-                />
-
-                <QuickAction
-                    icon="📁"
-                    title="Manage Projects"
-                    description="View and manage projects"
-                    onClick={() => navigate("/projects")}
-                />
-
-                <QuickAction
-                    icon="🐛"
-                    title="Manage Issues"
-                    description={`${issues.length} total issues`}
-                    onClick={() => navigate("/issues")}
-                />
-            </div>
-        </div>
-    );
+function StatusDistribution({ statuses, total }) {
+    const nonzero = statuses.filter(item => Number(item.count) > 0);
+    return <>
+        {total > 0 && <div className="sd-status-bar" role="img" aria-label="Task distribution by status">{nonzero.map(item => <span key={item.status} title={`${labelStatus(item.status)}: ${item.count}`} style={{ width: `${item.count * 100 / total}%`, backgroundColor: statusColors[item.status] || "#7c8aa3" }} />)}</div>}
+        <ul className="sd-status-list">{statuses.map(item => <li key={item.status}><span><i style={{ background: statusColors[item.status] || "#7c8aa3" }} />{labelStatus(item.status)}</span><strong>{item.count}<small>{total ? `${Math.round(item.count * 100 / total)}%` : "0%"}</small></strong></li>)}</ul>
+    </>;
 }
 
-function DashboardStat({ title, value, description, icon }) {
-    return (
-        <div className="rounded-xl border border-gray-800 bg-gray-900 p-5 transition hover:border-gray-700">
-            <div className="flex items-start justify-between">
-                <div>
-                    <p className="text-sm text-gray-500">{title}</p>
-                    <p className="mt-2 text-3xl font-bold text-white">
-                        {value}
-                    </p>
-                </div>
-
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-800 text-lg">
-                    {icon}
-                </div>
-            </div>
-
-            <p className="mt-3 text-xs text-gray-600">{description}</p>
-        </div>
-    );
+function BurndownChart({ data }) {
+    const points = data.snapshots || [];
+    const max = Math.max(1, ...points.map(point => Math.max(point.remainingIssues, point.idealRemainingIssues)));
+    const width = 680;
+    const height = 210;
+    const padding = { top: 18, right: 14, bottom: 30, left: 30 };
+    const toPoints = key => points.map((point, index) => {
+        const x = padding.left + (points.length === 1 ? (width - padding.left - padding.right) / 2 : index * (width - padding.left - padding.right) / (points.length - 1));
+        const y = padding.top + (1 - point[key] / max) * (height - padding.top - padding.bottom);
+        return `${x},${y}`;
+    }).join(" ");
+    return <div className="sd-panel-content"><div className="sd-section-head"><div><p className="sd-kicker">RECORDED HISTORY</p><h2>Sprint burndown</h2><p>{data.sprintName} · tracking since {formatDate(data.trackingStartedOn)}</p></div></div>
+        <div className="sd-chart-legend"><span><i className="sd-actual-key" />Actual remaining</span><span><i className="sd-ideal-key" />Ideal trend</span></div>
+        <div className="sd-chart-wrap"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Recorded sprint burndown for ${data.sprintName}`}>
+            {[0, 1, 2, 3].map(index => { const y = padding.top + index * (height - padding.top - padding.bottom) / 3; return <g key={index}><line x1={padding.left} x2={width - padding.right} y1={y} y2={y} className="sd-chart-grid" /><text x="0" y={y + 4} className="sd-chart-label">{Math.round(max * (3 - index) / 3)}</text></g>; })}
+            {points.length > 1 && <><polyline points={toPoints("idealRemainingIssues")} className="sd-chart-ideal" /><polyline points={toPoints("remainingIssues")} className="sd-chart-actual" /></>}
+            {points.map((point, index) => { const x = padding.left + (points.length === 1 ? (width - padding.left - padding.right) / 2 : index * (width - padding.left - padding.right) / (points.length - 1)); const y = padding.top + (1 - point.remainingIssues / max) * (height - padding.top - padding.bottom); return <g key={point.date}><circle cx={x} cy={y} r="3.5" className="sd-chart-dot" /><title>{`${formatDate(point.date)}: ${point.remainingIssues} remaining`}</title></g>; })}
+            {points.map((point, index) => <text key={point.date} x={padding.left + (points.length === 1 ? (width - padding.left - padding.right) / 2 : index * (width - padding.left - padding.right) / (points.length - 1))} y={height - 5} textAnchor="middle" className="sd-chart-label">{formatShortDate(point.date)}</text>)}
+        </svg></div>
+        <p className="sd-footnote">Actual line includes only snapshots recorded by the collector. Sprint dates: {formatDate(data.sprintStartDate)} – {formatDate(data.sprintEndDate)}.</p>
+    </div>;
 }
 
-function RoleCard({
-    title,
-    value,
-    icon,
-    description,
-    className,
-    textClass
-}) {
-    return (
-        <div className={`rounded-xl border p-4 ${className}`}>
-            <div className="flex items-center justify-between">
-                <div>
-                    <p className="text-sm text-gray-400">{title}</p>
-                    <p className={`mt-1 text-2xl font-bold ${textClass}`}>
-                        {value}
-                    </p>
-                </div>
-
-                <span className="text-xl">{icon}</span>
-            </div>
-
-            <p className="mt-3 text-xs text-gray-600">{description}</p>
-        </div>
-    );
+function labelStatus(value) { return String(value || "Unknown").toLowerCase().replaceAll("_", " ").replace(/\b\w/g, char => char.toUpperCase()); }
+function formatDate(value) { return value ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`)) : "Date unavailable"; }
+function formatWait(seconds) {
+    const totalMinutes = Math.max(0, Math.floor(Number(seconds || 0) / 60));
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    if (days) return `${days}d ${hours}h`;
+    if (hours) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
 }
-
-function MiniMetric({ label, value }) {
-    return (
-        <div className="rounded-lg bg-gray-950 p-3">
-            <p className="text-xs text-gray-600">{label}</p>
-            <p className="mt-1 text-lg font-semibold text-white">{value}</p>
-        </div>
-    );
+function formatApprovalDate(value) {
+    if (!value) return "date unavailable";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "date unavailable" : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
-
-function QuickAction({ icon, title, description, onClick }) {
-    return (
-        <button
-            onClick={onClick}
-            className="group rounded-xl border border-gray-800 bg-gray-900 p-5 text-left transition hover:border-blue-500/40 hover:bg-gray-800/70"
-        >
-            <div className="flex items-center gap-4">
-                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500/10 text-xl transition group-hover:bg-blue-500/20">
-                    {icon}
-                </div>
-
-                <div>
-                    <p className="font-medium text-white">{title}</p>
-                    <p className="mt-1 text-xs text-gray-500">
-                        {description}
-                    </p>
-                </div>
-            </div>
-        </button>
-    );
-}
-
-function EmptyState({ text }) {
-    return (
-        <div className="rounded-lg border border-dashed border-gray-800 p-6 text-center">
-            <p className="text-sm text-gray-500">{text}</p>
-        </div>
-    );
-}
-
-function getActivityIcon(action) {
-    if (action?.includes("COMMENT")) return "💬";
-    if (action?.includes("STATUS")) return "🔄";
-    if (action?.includes("ASSIGNED")) return "👤";
-    if (action?.includes("SPRINT")) return "⚡";
-    if (action?.includes("DELETED")) return "🗑️";
-    if (action?.includes("CREATED")) return "✨";
-    if (action?.includes("ROLE")) return "🛡️";
-    return "•";
-}
-
-function formatAction(action) {
-    if (!action) return "ACTIVITY";
-
-    return action
-        .replaceAll("_", " ")
-        .toLowerCase()
-        .replace(/\b\w/g, letter => letter.toUpperCase());
-}
-
-function formatDate(date) {
-    if (!date) return "Unknown time";
-
-    const value = new Date(date);
-
-    if (Number.isNaN(value.getTime())) {
-        return "Unknown time";
-    }
-
-    return value.toLocaleString([], {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit"
-    });
-}
-
-function ManagerDashboard({ projects, issues, sprints }) {
-    const activeIssues = issues.filter(
-        issue => issue.status === "IN_PROGRESS"
-    ).length;
-
-    const completedIssues = issues.filter(
-        issue =>
-            issue.status === "RESOLVED" ||
-            issue.status === "CLOSED"
-    ).length;
-
-    const activeSprints = sprints.filter(
-        sprint => sprint.status === "ACTIVE"
-    ).length;
-
-    return (
-        <div className="space-y-8">
-            <div>
-                <p className="text-sm text-purple-400">
-                    PROJECT MANAGEMENT
-                </p>
-                <h1 className="mt-1 text-3xl font-bold text-white">
-                    Manager Dashboard
-                </h1>
-                <p className="mt-2 text-gray-500">
-                    Monitor projects, teams, issues and sprint progress.
-                </p>
-            </div>
-
-            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-                <DashboardStat
-                    title="My Projects"
-                    value={projects.length}
-                    description="Projects you manage"
-                    icon="📁"
-                />
-                <DashboardStat
-                    title="Total Issues"
-                    value={issues.length}
-                    description="Across your projects"
-                    icon="🐛"
-                />
-                <DashboardStat
-                    title="In Progress"
-                    value={activeIssues}
-                    description="Issues currently active"
-                    icon="🔄"
-                />
-                <DashboardStat
-                    title="Completed"
-                    value={completedIssues}
-                    description="Resolved or closed"
-                    icon="✅"
-                />
-            </div>
-
-            <div className="grid gap-6 lg:grid-cols-3">
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-6 lg:col-span-2">
-                    <h2 className="text-lg font-semibold text-white">
-                        Projects
-                    </h2>
-
-                    <div className="mt-5 space-y-3">
-                        {projects.slice(0, 6).map(project => (
-                            <div
-                                key={project.id}
-                                className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-950 p-4"
-                            >
-                                <div>
-                                    <p className="font-medium text-white">
-                                        {project.name}
-                                    </p>
-                                    <p className="mt-1 text-xs text-gray-500">
-                                        {project.description ||
-                                            "No description"}
-                                    </p>
-                                </div>
-
-                                <span className="rounded-full bg-purple-500/10 px-3 py-1 text-xs text-purple-400">
-                                    {project.status || "ACTIVE"}
-                                </span>
-                            </div>
-                        ))}
-
-                        {projects.length === 0 && (
-                            <EmptyState text="No projects available." />
-                        )}
-                    </div>
-                </div>
-
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
-                    <h2 className="text-lg font-semibold text-white">
-                        Sprint Status
-                    </h2>
-
-                    <div className="mt-5">
-                        <div className="rounded-xl bg-purple-500/10 p-5">
-                            <p className="text-sm text-purple-400">
-                                ACTIVE SPRINTS
-                            </p>
-                            <p className="mt-2 text-4xl font-bold text-white">
-                                {activeSprints}
-                            </p>
-                        </div>
-
-                        <div className="mt-4 space-y-3">
-                            {sprints.slice(0, 4).map(sprint => (
-                                <div
-                                    key={sprint.id}
-                                    className="border-b border-gray-800 pb-3"
-                                >
-                                    <p className="text-sm font-medium text-white">
-                                        {sprint.name}
-                                    </p>
-                                    <p className="text-xs text-gray-500">
-                                        {sprint.status}
-                                    </p>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function DeveloperDashboard({
-    user,
-    issues,
-    sprints
-}) {
-    const myIssues = issues.filter(
-        issue => issue.assignedUser?.email === user?.email
-    );
-
-    const inProgress = myIssues.filter(
-        issue => issue.status === "IN_PROGRESS"
-    ).length;
-
-    const completed = myIssues.filter(
-        issue =>
-            issue.status === "RESOLVED" ||
-            issue.status === "CLOSED"
-    ).length;
-
-    const codeReview = myIssues.filter(
-        issue => issue.status === "CODE_REVIEW"
-    ).length;
-
-    const activeSprint = sprints.find(
-        sprint => sprint.status === "ACTIVE"
-    );
-
-    return (
-        <div className="space-y-8">
-            <div>
-                <p className="text-sm text-green-400">
-                    DEVELOPER WORKSPACE
-                </p>
-                <h1 className="mt-1 text-3xl font-bold text-white">
-                    My Development Dashboard
-                </h1>
-                <p className="mt-2 text-gray-500">
-                    Focus on your assigned engineering work.
-                </p>
-            </div>
-
-            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-                <DashboardStat
-                    title="My Issues"
-                    value={myIssues.length}
-                    description="Assigned to you"
-                    icon="💻"
-                />
-                <DashboardStat
-                    title="In Progress"
-                    value={inProgress}
-                    description="Currently working on"
-                    icon="🔄"
-                />
-                <DashboardStat
-                    title="Code Review"
-                    value={codeReview}
-                    description="Waiting for review"
-                    icon="🔍"
-                />
-                <DashboardStat
-                    title="Completed"
-                    value={completed}
-                    description="Successfully completed"
-                    icon="✅"
-                />
-            </div>
-
-            <div className="grid gap-6 lg:grid-cols-3">
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-6 lg:col-span-2">
-                    <h2 className="text-lg font-semibold text-white">
-                        My Issues
-                    </h2>
-
-                    <div className="mt-5 space-y-3">
-                        {myIssues.slice(0, 8).map(issue => (
-                            <div
-                                key={issue.id}
-                                className="rounded-lg border border-gray-800 bg-gray-950 p-4"
-                            >
-                                <div className="flex items-start justify-between gap-4">
-                                    <div>
-                                        <p className="font-medium text-white">
-                                            {issue.title}
-                                        </p>
-                                        <p className="mt-1 text-xs text-gray-500">
-                                            {issue.description ||
-                                                "No description"}
-                                        </p>
-                                    </div>
-
-                                    <span className="rounded-full bg-green-500/10 px-3 py-1 text-xs text-green-400">
-                                        {issue.status}
-                                    </span>
-                                </div>
-
-                                <p className="mt-3 text-xs text-gray-500">
-                                    Priority:{" "}
-                                    <span className="text-gray-300">
-                                        {issue.priority}
-                                    </span>
-                                </p>
-                            </div>
-                        ))}
-
-                        {myIssues.length === 0 && (
-                            <EmptyState text="No issues are currently assigned to you." />
-                        )}
-                    </div>
-                </div>
-
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
-                    <p className="text-sm text-green-400">
-                        CURRENT SPRINT
-                    </p>
-
-                    {activeSprint ? (
-                        <>
-                            <h2 className="mt-3 text-xl font-semibold text-white">
-                                {activeSprint.name}
-                            </h2>
-
-                            <p className="mt-2 text-sm text-gray-500">
-                                {activeSprint.goal ||
-                                    "No sprint goal specified."}
-                            </p>
-
-                            <div className="mt-6 rounded-lg bg-gray-950 p-4">
-                                <p className="text-xs text-gray-500">
-                                    MY SPRINT ISSUES
-                                </p>
-                                <p className="mt-1 text-2xl font-bold text-white">
-                                    {
-                                        myIssues.filter(
-                                            issue =>
-                                                issue.sprint?.id ===
-                                                activeSprint.id
-                                        ).length
-                                    }
-                                </p>
-                            </div>
-                        </>
-                    ) : (
-                        <EmptyState text="No active sprint." />
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function ViewerDashboard({
-    projects,
-    issues,
-    sprints
-}) {
-    return (
-        <div className="space-y-8">
-            <div>
-                <p className="text-sm text-gray-400">
-                    READ-ONLY WORKSPACE
-                </p>
-                <h1 className="mt-1 text-3xl font-bold text-white">
-                    Project Overview
-                </h1>
-                <p className="mt-2 text-gray-500">
-                    View the current state of engineering projects.
-                </p>
-            </div>
-
-            <div className="grid gap-5 md:grid-cols-3">
-                <DashboardStat
-                    title="Projects"
-                    value={projects.length}
-                    description="Available projects"
-                    icon="📁"
-                />
-                <DashboardStat
-                    title="Issues"
-                    value={issues.length}
-                    description="Tracked issues"
-                    icon="🐛"
-                />
-                <DashboardStat
-                    title="Sprints"
-                    value={sprints.length}
-                    description="Project sprints"
-                    icon="⚡"
-                />
-            </div>
-
-            <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
-                <h2 className="text-lg font-semibold text-white">
-                    Projects
-                </h2>
-
-                <div className="mt-5 grid gap-4 md:grid-cols-2">
-                    {projects.map(project => (
-                        <div
-                            key={project.id}
-                            className="rounded-lg border border-gray-800 bg-gray-950 p-5"
-                        >
-                            <h3 className="font-medium text-white">
-                                {project.name}
-                            </h3>
-
-                            <p className="mt-2 text-sm text-gray-500">
-                                {project.description ||
-                                    "No description"}
-                            </p>
-
-                            <p className="mt-4 text-xs text-gray-500">
-                                Status:{" "}
-                                <span className="text-gray-300">
-                                    {project.status}
-                                </span>
-                            </p>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
-    );
-}
+function formatShortDate(value) { return value ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`)) : ""; }
 
 export default Dashboard;

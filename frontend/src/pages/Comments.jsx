@@ -1,7 +1,9 @@
+import { apiUrl } from "../services/apiConfig";
 import { useEffect, useMemo, useState } from "react";
 import Avatar from "../components/Avatar";
+import { loadDropdownOptions, dropdownLabel } from "../services/dropdownOptions";
 
-const API = "http://localhost:8080/api";
+const API = apiUrl("/api");
 const roleNames = { ADMIN: "Administrator", PROJECT_MANAGER: "Project Manager", DEVELOPER: "Developer", VIEWER: "Viewer" };
 const list = value => Array.isArray(value) ? value : Array.isArray(value?.content) ? value.content : [];
 const dateLabel = value => value ? new Date(value).toLocaleString() : "Date unavailable";
@@ -23,9 +25,11 @@ function Comments() {
     const [deletingId, setDeletingId] = useState(null);
     const [error, setError] = useState("");
     const [commentsError, setCommentsError] = useState("");
+    const [statusOptions, setStatusOptions] = useState([]);
     const token = localStorage.getItem("token");
 
     useEffect(() => {
+        loadDropdownOptions("ISSUE_STATUS").then(data=>setStatusOptions(data)).catch(()=>{});
         let active = true;
         const headers = { Authorization: `Bearer ${token}` };
         Promise.all([
@@ -33,7 +37,7 @@ function Comments() {
             fetch(`${API}/projects`, { headers }),
             fetch(`${API}/users/me`, { headers })
         ]).then(async ([issueResponse, projectResponse, userResponse]) => {
-            if (!issueResponse.ok || !projectResponse.ok || !userResponse.ok) throw new Error("Could not load issues, projects, or your account.");
+            if (!issueResponse.ok || !projectResponse.ok || !userResponse.ok) throw new Error("Could not load tasks, projects, or your account.");
             const [issueData, projectData, userData] = await Promise.all([issueResponse.json(), projectResponse.json(), userResponse.json()]);
             if (!active) return;
             const issueList = list(issueData);
@@ -60,7 +64,7 @@ function Comments() {
         let active = true;
         fetch(`${API}/comments/issue/${selectedIssueId}`, { headers: { Authorization: `Bearer ${token}` } })
             .then(async response => {
-                if (!response.ok) throw new Error("Could not load comments for this issue.");
+                if (!response.ok) throw new Error("Could not load comments for this task.");
                 return list(await response.json());
             })
             .then(data => { if (active) { setComments(data); setCommentsForIssue(String(selectedIssueId)); setCommentsLoading(false); } })
@@ -110,30 +114,30 @@ function Comments() {
     if (loading) return <PageState title="Loading comments…" />;
     if (error) return <PageError message={error} />;
 
-    return <div className="mx-auto max-w-6xl space-y-7">
-        <header><p className="text-sm font-medium text-blue-400">DISCUSSION</p><h1 className="mt-2 text-3xl font-semibold text-white">Comments</h1><p className="mt-2 text-sm text-gray-400">Follow the conversation around your team’s issues.</p></header>
+    return <div className="dfx-screen dfx-screen--comments mx-auto max-w-6xl space-y-7">
+        <header className="dfx-screen-header"><p className="text-sm font-medium text-blue-400">DISCUSSION</p><h1 className="mt-2 text-3xl font-semibold text-white">Comments</h1><p className="mt-2 text-sm text-gray-400">Follow the conversation around your team’s tasks.</p></header>
 
         <section className="rounded-2xl border border-gray-800 bg-gray-900 p-5 sm:p-6">
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_200px_170px]">
-                <input className={inputClass} value={search} onChange={event => setSearch(event.target.value)} placeholder="Search issues…" aria-label="Search issues" />
+                <input className={inputClass} value={search} onChange={event => setSearch(event.target.value)} placeholder="Search tasks…" aria-label="Search tasks" />
                 <select className={inputClass} value={projectFilter} onChange={event => setProjectFilter(event.target.value)} aria-label="Filter by project"><option value="ALL">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name || `Project ${project.id}`}</option>)}</select>
-                <select className={inputClass} value={statusFilter} onChange={event => setStatusFilter(event.target.value)} aria-label="Filter by status"><option value="ALL">All statuses</option>{[...new Set(issues.map(issue => issue.status).filter(Boolean))].map(status => <option key={status}>{status}</option>)}</select>
+                <select className={inputClass} value={statusFilter} onChange={event => setStatusFilter(event.target.value)} aria-label="Filter by status"><option value="ALL">All statuses</option>{[...new Set([...statusOptions.map(option=>option.code),...issues.map(issue=>issue.status).filter(Boolean)])].map(status => <option key={status} value={status}>{dropdownLabel(statusOptions,status,status.replaceAll("_"," "))}</option>)}</select>
             </div>
-            <label className="mt-4 block text-xs font-medium uppercase tracking-wider text-gray-500" htmlFor="comment-issue">Selected issue</label>
-            <select id="comment-issue" className={`${inputClass} mt-2 w-full`} value={selectedIssue ? String(selectedIssue.id) : ""} onChange={event => { setIssueId(event.target.value); setCommentsError(""); }}>
-                {visibleIssues.length === 0 && <option value="">No issues match these filters</option>}
-                {visibleIssues.map(issue => <option key={issue.id} value={issue.id}>{issue.title || `Issue #${issue.id}`} · {issue.status || "Unknown status"}</option>)}
+            <label className="mt-4 block text-xs font-medium uppercase tracking-wider text-gray-500" htmlFor="comment-task">Selected task</label>
+            <select id="comment-task" className={`${inputClass} mt-2 w-full`} value={selectedIssue ? String(selectedIssue.id) : ""} onChange={event => { setIssueId(event.target.value); setCommentsError(""); }}>
+                {visibleIssues.length === 0 && <option value="">No tasks match these filters</option>}
+                {visibleIssues.map(issue => <option key={issue.id} value={issue.id}>{issue.title || `Task #${issue.id}`} · {issue.status || "Unknown status"}</option>)}
             </select>
         </section>
 
         {selectedIssue ? <section className="rounded-2xl border border-gray-800 bg-gray-900 p-5 sm:p-6">
-            <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-medium uppercase tracking-wider text-gray-500">ISSUE #{selectedIssue.id}</p><h2 className="mt-2 text-xl font-semibold text-white">{selectedIssue.title || "Untitled issue"}</h2><p className="mt-2 text-sm text-gray-400">{selectedIssue.project?.name || "Project unavailable"} · {selectedIssue.assignedUser?.name || "Unassigned"}</p></div><div className="flex gap-2"><span className="rounded-full bg-gray-800 px-3 py-1 text-xs text-gray-300">{selectedIssue.status || "Unknown status"}</span><span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-medium text-blue-300">{selectedIssue.priority || "No priority"}</span></div></div>
-        </section> : <div className="rounded-2xl border border-dashed border-gray-700 p-8 text-center text-sm text-gray-400">Select an issue to view its conversation.</div>}
+            <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-medium uppercase tracking-wider text-gray-500">TASK #{selectedIssue.id}</p><h2 className="mt-2 text-xl font-semibold text-white">{selectedIssue.title || "Untitled task"}</h2><p className="mt-2 text-sm text-gray-400">{selectedIssue.project?.name || "Project unavailable"} · {selectedIssue.assignedUser?.name || "Unassigned"}</p></div><div className="flex gap-2"><span className="rounded-full bg-gray-800 px-3 py-1 text-xs text-gray-300">{selectedIssue.status || "Unknown status"}</span><span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-medium text-blue-300">{selectedIssue.priority || "No priority"}</span></div></div>
+        </section> : <div className="rounded-2xl border border-dashed border-gray-700 p-8 text-center text-sm text-gray-400">Select an task to view its conversation.</div>}
 
         <section className="rounded-2xl border border-gray-800 bg-gray-900 p-5 sm:p-6">
             <div className="mb-5 flex items-center justify-between gap-4"><div><h2 className="text-lg font-semibold text-white">Discussion</h2><p className="mt-1 text-sm text-gray-500">{comments.length} {comments.length === 1 ? "comment" : "comments"}</p></div>{user && <span className="rounded-full border border-gray-700 px-3 py-1 text-xs text-gray-400">{roleNames[user.role] || user.role}</span>}</div>
             {commentsError && <div role="alert" className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">{commentsError}</div>}
-            {!selectedIssue ? <p className="rounded-xl bg-gray-800/50 px-4 py-8 text-center text-sm text-gray-400">Select an issue to view comments.</p> : commentsLoading || commentsForIssue !== String(selectedIssue.id) ? <p className="py-8 text-center text-sm text-gray-500">Loading discussion…</p> : comments.length === 0 ? <p className="rounded-xl bg-gray-800/50 px-4 py-8 text-center text-sm text-gray-400">No comments yet. Start the conversation below.</p> : <div className="space-y-3">
+            {!selectedIssue ? <p className="rounded-xl bg-gray-800/50 px-4 py-8 text-center text-sm text-gray-400">Select an task to view comments.</p> : commentsLoading || commentsForIssue !== String(selectedIssue.id) ? <p className="py-8 text-center text-sm text-gray-500">Loading discussion…</p> : comments.length === 0 ? <p className="rounded-xl bg-gray-800/50 px-4 py-8 text-center text-sm text-gray-400">No comments yet. Start the conversation below.</p> : <div className="space-y-3">
                 {comments.map(comment => {
                     const author = comment.user || comment.author || {};
                     return <article key={comment.id} className="rounded-xl border border-gray-800 bg-gray-950/60 p-4">

@@ -11,7 +11,7 @@ import org.springframework.web.server.ResponseStatusException;
 import com.devflow.devflow.dto.IssueReportRowDTO;
 import com.devflow.devflow.dto.ProjectReportDTO;
 import com.devflow.devflow.dto.ProjectReportSummaryDTO;
-import com.devflow.devflow.dto.UserResponseDTO;
+import com.devflow.devflow.dto.CollaboratorResponseDTO;
 import com.devflow.devflow.entity.Issue;
 import com.devflow.devflow.entity.IssueStatus;
 import com.devflow.devflow.entity.Project;
@@ -97,8 +97,8 @@ public class ProjectReportService {
         }
     }
 
-    private UserResponseDTO toUserResponse(User user) {
+    private CollaboratorResponseDTO toUserResponse(User user) {
         if (user == null) return null;
-        return new UserResponseDTO(user.getId(), user.getName(), user.getEmail(), user.getRole(), user.getAvatarUrl());
+        return new CollaboratorResponseDTO(user);
     }
 }

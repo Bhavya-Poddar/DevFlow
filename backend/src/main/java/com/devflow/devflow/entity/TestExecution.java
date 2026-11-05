@@ -23,6 +23,9 @@ public class TestExecution {
     private User tester;
     private String status;
     private String result;
+
+    @Column(name = "workflow_cycle", nullable = false)
+    private int workflowCycle = 1;
     @Column(columnDefinition = "TEXT")
     private String testScenario;
     @Column(columnDefinition = "TEXT")
@@ -50,6 +53,8 @@ public class TestExecution {
     public void setStatus(String status) { this.status = status; }
     public String getResult() { return result; }
     public void setResult(String result) { this.result = result; }
+    public int getWorkflowCycle() { return workflowCycle; }
+    public void setWorkflowCycle(int workflowCycle) { this.workflowCycle = workflowCycle; }
     public String getTestScenario() { return testScenario; }
     public void setTestScenario(String testScenario) { this.testScenario = testScenario; }
     public String getExpectedResult() { return expectedResult; }

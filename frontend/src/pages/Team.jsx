@@ -1,5 +1,7 @@
+import { apiUrl } from "../services/apiConfig";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Avatar from "../components/Avatar";
+import RecordTable from "../components/RecordTable";
 
 function Team() {
     const [users, setUsers] = useState([]);
@@ -10,6 +12,8 @@ function Team() {
     const [changingUser, setChangingUser] = useState(null);
     const [selectedRole, setSelectedRole] = useState("");
     const [success, setSuccess] = useState("");
+    const [canManageRoles, setCanManageRoles] = useState(false);
+    const [globalRoles, setGlobalRoles] = useState([]);
     const [currentUser, setCurrentUser] = useState(null);
     const [savingRole, setSavingRole] = useState(false);
 
@@ -21,9 +25,10 @@ function Team() {
             setError("");
 
             const headers = { Authorization: `Bearer ${token}` };
-            const [response, meResponse] = await Promise.all([
-                fetch("http://localhost:8080/api/users", { headers }),
-                fetch("http://localhost:8080/api/users/me", { headers })
+            const [response, meResponse, permissionResponse] = await Promise.all([
+                fetch(apiUrl("/api/users"), { headers }),
+                fetch(apiUrl("/api/users/me"), { headers }),
+                fetch(apiUrl("/api/users/me/permissions"), { headers })
             ]);
 
             if (!response.ok) {
@@ -36,6 +41,15 @@ function Team() {
             const data = await response.json();
             setUsers(Array.isArray(data) ? data : Array.isArray(data?.content) ? data.content : []);
             if (meResponse.ok) setCurrentUser(await meResponse.json());
+            if (permissionResponse.ok) {
+                const effective = await permissionResponse.json();
+                const allowed = Boolean(effective?.recoveryCapable || effective?.global?.includes("ROLE_MANAGE"));
+                setCanManageRoles(allowed);
+                if (allowed) {
+                    const roleResponse = await fetch(apiUrl("/api/admin/roles"), { headers });
+                    if (roleResponse.ok) setGlobalRoles((await roleResponse.json()).filter(role => role.scope === "GLOBAL" && !role.retired));
+                }
+            }
         } catch (err) {
             setError(err.message);
         } finally {
@@ -68,15 +82,8 @@ function Team() {
         VIEWER: "bg-gray-500/10 text-gray-400 border-gray-500/20"
     };
 
-    const roleLabels = {
-        ADMIN: "Administrator",
-        PROJECT_MANAGER: "Project Manager",
-        DEVELOPER: "Developer",
-        TESTER: "Tester",
-        VIEWER: "Viewer"
-    };
-
     const handleOpenRoleChange = user => {
+        if (!canManageRoles) return;
         setChangingUser(user);
         setSelectedRole(user.role);
         setError("");
@@ -84,7 +91,7 @@ function Team() {
     };
 
     const handleRoleChange = async () => {
-        if (!changingUser || !selectedRole) return;
+        if (!canManageRoles || !changingUser || !selectedRole) return;
 
         if (changingUser.role === selectedRole) {
             setChangingUser(null);
@@ -97,7 +104,7 @@ function Team() {
             setSuccess("");
 
             const response = await fetch(
-                `http://localhost:8080/api/users/${changingUser.id}/role`,
+                apiUrl(`/api/users/${changingUser.id}/role`),
                 {
                     method: "PUT",
                     headers: {
@@ -125,7 +132,7 @@ function Team() {
             );
 
             setSuccess(
-                `${changingUser.name}'s role was changed to ${roleLabels[selectedRole]}.`
+                `${changingUser.name}'s role was changed to ${roleName(selectedRole, globalRoles)}.`
             );
 
             setChangingUser(null);
@@ -160,9 +167,9 @@ const totalAdmins = users.filter(user => user.role === "ADMIN").length;
     }
 
     return (
-        <div className="space-y-8">
-            <div>
-                <p className="text-sm font-medium text-red-400">
+        <div className="dfx-screen dfx-screen--team space-y-8">
+            <div className="dfx-screen-header">
+                <div><p className="mb-2 text-xs font-semibold uppercase tracking-[.16em] text-violet-300">ACCESS / DIRECTORY</p><p className="text-sm font-medium text-red-400">
                     ADMINISTRATION
                 </p>
                 <h1 className="mt-1 text-3xl font-bold text-white">
@@ -170,7 +177,7 @@ const totalAdmins = users.filter(user => user.role === "ADMIN").length;
                 </h1>
                 <p className="mt-2 text-gray-500">
                     Manage users and control access levels across DevFlow.
-                </p>
+                </p></div>
             </div>
 
             {error && (
@@ -190,19 +197,19 @@ const totalAdmins = users.filter(user => user.role === "ADMIN").length;
                     label="Administrators"
                     value={totalAdmins}
                     description="Full system access"
-                    icon="🛡️"
+                    icon="◈"
                 />
                 <RoleSummary
                     label="Project Managers"
                     value={totalManagers}
                     description="Project management access"
-                    icon="📊"
+                    icon="▥"
                 />
                 <RoleSummary
                     label="Developers"
                     value={totalDevelopers}
                     description="Engineering access"
-                    icon="💻"
+                    icon="⌘"
                 />
                 <RoleSummary
                     label="Testers"
@@ -214,11 +221,11 @@ const totalAdmins = users.filter(user => user.role === "ADMIN").length;
                     label="Viewers"
                     value={totalViewers}
                     description="Read-only access"
-                    icon="👁️"
+                    icon="◉"
                 />
             </div>
 
-            <div className="rounded-xl border border-gray-800 bg-gray-900">
+            <div className="dfx-team-directory rounded-xl border border-gray-800 bg-gray-900">
                 <div className="border-b border-gray-800 p-6">
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                         <div>
@@ -245,100 +252,26 @@ const totalAdmins = users.filter(user => user.role === "ADMIN").length;
                                 className="rounded-lg border border-gray-700 bg-gray-950 px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500"
                             >
                                 <option value="ALL">All roles</option>
-                                <option value="ADMIN">Administrators</option>
-                                <option value="PROJECT_MANAGER">
-                                    Project Managers
-                                </option>
-                                <option value="DEVELOPER">Developers</option>
-                                <option value="TESTER">Testers</option>
-                                <option value="VIEWER">Viewers</option>
+                                {[...new Set(users.map(user => user.role).filter(Boolean))].sort().map(role => <option key={role} value={role}>{roleName(role, globalRoles)}</option>)}
                             </select>
                         </div>
                     </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                    <table className="w-full min-w-[800px]">
-                        <thead>
-                            <tr className="border-b border-gray-800 text-left">
-                                <th className="px-6 py-4 text-xs font-medium uppercase tracking-wider text-gray-500">
-                                    User
-                                </th>
-                                <th className="px-6 py-4 text-xs font-medium uppercase tracking-wider text-gray-500">
-                                    Email
-                                </th>
-                                <th className="px-6 py-4 text-xs font-medium uppercase tracking-wider text-gray-500">
-                                    Role
-                                </th>
-                                <th className="px-6 py-4 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                                    Access
-                                </th>
-                            </tr>
-                        </thead>
-
-                        <tbody>
-                            {filteredUsers.map(user => (
-                                <tr
-                                    key={user.id}
-                                    className="border-b border-gray-800/70 transition hover:bg-gray-800/30"
-                                >
-                                    <td className="px-6 py-5">
-                                        <div className="flex items-center gap-3">
-                                            <Avatar name={user.name} src={user.avatarUrl} size={40} />
-
-                                            <div>
-                                                <p className="font-medium text-white">
-                                                    {user.name}
-                                                </p>
-                                                <p className="text-xs text-gray-600">
-                                                    ID #{user.id}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </td>
-
-                                    <td className="px-6 py-5 text-sm text-gray-400">
-                                        {user.email}
-                                    </td>
-
-                                    <td className="px-6 py-5">
-                                        <span
-                                            className={`inline-flex rounded-full border px-3 py-1 text-xs font-medium ${
-                                                roleStyles[user.role] ||
-                                                roleStyles.VIEWER
-                                            }`}
-                                        >
-                                            {roleLabels[user.role] ||
-                                                user.role}
-                                        </span>
-                                    </td>
-
-                                    <td className="px-6 py-5 text-right">
-                                            {currentUser?.role === "ADMIN" && <button
-                                            onClick={() =>
-                                                handleOpenRoleChange(user)
-                                            }
-                                            className="rounded-lg border border-gray-700 px-3 py-2 text-sm text-gray-300 transition hover:border-blue-500 hover:bg-blue-500/10 hover:text-blue-400"
-                                        >
-                                            Change Role
-                                            </button>}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-
-                    {filteredUsers.length === 0 && (
-                        <div className="p-12 text-center">
-                            <p className="text-gray-400">
-                                No users found.
-                            </p>
-                            <p className="mt-1 text-sm text-gray-600">
-                                Try changing your search or role filter.
-                            </p>
-                        </div>
-                    )}
-                </div>
+                <RecordTable
+                    rows={filteredUsers}
+                    showSearch={false}
+                    getSearchText={user => `${user.name || ""} ${user.email || ""} ${user.role || ""}`}
+                    emptyLabel="No users match the selected filters."
+                    columns={[
+                        { key: "name", label: "Team member", sortValue: user => user.name, render: user => <div className="flex min-w-48 items-center gap-3"><Avatar name={user.name} src={user.avatarUrl} size={38} /><div><p className="font-medium text-white">{user.name || "Unnamed user"}</p><p className="text-xs text-gray-500">ID #{user.id}</p></div></div> },
+                        { key: "email", label: "Email", sortValue: user => user.email, render: user => user.email || "—" },
+                        { key: "role", label: "Role", sortValue: user => roleName(user.role, globalRoles), render: user => <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-medium ${roleStyles[user.role] || roleStyles.VIEWER}`}>{roleName(user.role, globalRoles)}</span> }
+                    ]}
+                    actionsForRow={user => canManageRoles && currentUser?.id !== user.id
+                        ? [{ label: "Change role", onSelect: () => handleOpenRoleChange(user) }]
+                        : []}
+                />
             </div>
 
             {changingUser && (
@@ -369,13 +302,7 @@ const totalAdmins = users.filter(user => user.role === "ADMIN").length;
                                 }
                                 className="w-full rounded-lg border border-gray-700 bg-gray-950 px-4 py-3 text-sm text-white outline-none focus:border-blue-500"
                             >
-                                <option value="VIEWER">Viewer</option>
-                                <option value="DEVELOPER">Developer</option>
-                                <option value="TESTER">Tester</option>
-                                <option value="PROJECT_MANAGER">
-                                    Project Manager
-                                </option>
-                                <option value="ADMIN">Administrator</option>
+                                {globalRoles.map(role => <option key={role.id} value={role.code}>{role.name}</option>)}
                             </select>
 
                             <div className="mt-4 rounded-lg bg-gray-950 p-4">
@@ -383,14 +310,14 @@ const totalAdmins = users.filter(user => user.role === "ADMIN").length;
                                     Current Role
                                 </p>
                                 <p className="mt-1 text-sm text-gray-300">
-                                    {roleLabels[changingUser.role]}
+                                    {roleName(changingUser.role, globalRoles)}
                                 </p>
 
                                 <p className="mt-3 text-xs uppercase tracking-wider text-gray-600">
                                     New Role
                                 </p>
                                 <p className="mt-1 text-sm text-blue-400">
-                                    {roleLabels[selectedRole]}
+                                    {roleName(selectedRole, globalRoles)}
                                 </p>
                             </div>
                         </div>
@@ -416,6 +343,10 @@ const totalAdmins = users.filter(user => user.role === "ADMIN").length;
             )}
         </div>
     );
+}
+
+function roleName(code, roles = []) {
+    return roles.find(role => role.code === code)?.name || ({ ADMIN: "Administrator", PROJECT_MANAGER: "Project Manager", DEVELOPER: "Developer", TESTER: "Tester", VIEWER: "Viewer" }[code]) || code || "Unknown role";
 }
 
 function RoleSummary({ label, value, description, icon }) {

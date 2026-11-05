@@ -2,6 +2,7 @@ package com.devflow.devflow.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -9,16 +10,21 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import java.util.List;
 
 @Configuration
+@Import(FrontendOriginPolicy.class)
 public class CorsConfig {
+
+    private final FrontendOriginPolicy frontendOriginPolicy;
+
+    public CorsConfig(FrontendOriginPolicy frontendOriginPolicy) {
+        this.frontendOriginPolicy = frontendOriginPolicy;
+    }
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
 
         CorsConfiguration configuration = new CorsConfiguration();
 
-        configuration.setAllowedOrigins(
-                List.of("http://localhost:5173")
-        );
+        configuration.setAllowedOrigins(frontendOriginPolicy.allowedOrigins());
 
         configuration.setAllowedMethods(
                 List.of(
@@ -31,7 +37,7 @@ public class CorsConfig {
         );
 
         configuration.setAllowedHeaders(
-                List.of("*")
+                List.of("Authorization", "Content-Type", "Accept")
         );
 
         configuration.setAllowCredentials(true);

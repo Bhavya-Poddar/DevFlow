@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
+import { API_BASE_URL } from "../services/apiConfig";
 const initials = name => String(name || "User").trim().split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join("") || "U";
 
 export default function Avatar({ name, src, size = 40, version = "", className = "" }) {
@@ -13,7 +13,7 @@ export default function Avatar({ name, src, size = 40, version = "", className =
         const controller = new AbortController();
         let objectUrl = "";
         const separator = src.includes("?") ? "&" : "?";
-        fetch(`${API_BASE}${src}${separator}v=${encodeURIComponent(version || refresh || "profile")}`, {
+        fetch(`${API_BASE_URL}${src}${separator}v=${encodeURIComponent(version || refresh || "profile")}`, {
             headers: { Authorization: `Bearer ${token}` }, signal: controller.signal
         }).then(response => {
             if (!response.ok) throw new Error("Avatar unavailable");

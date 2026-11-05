@@ -9,6 +9,8 @@ public enum IssueStatus {
     CODE_REVIEW,
     READY_FOR_TESTING,
     TESTING,
+    TEAM_LEAD_APPROVAL,
+    PROJECT_MANAGER_APPROVAL,
     RESOLVED;
 
     /** Parse an API status value without silently accepting legacy or custom values. */
@@ -33,7 +35,7 @@ public enum IssueStatus {
     }
 
     public boolean isManualTarget() {
-        return this != TESTING && this != RESOLVED;
+        return this == OPEN || this == IN_PROGRESS || this == CODE_REVIEW || this == READY_FOR_TESTING;
     }
 
     public boolean isNextDeveloperStatus(IssueStatus target) {
@@ -47,6 +49,11 @@ public enum IssueStatus {
 
     /** Existing ADMIN/PROJECT_MANAGER workflow allows reopening or moving among manual states. */
     public boolean allowsManagerTransitionTo(IssueStatus target) {
-        return this != TESTING && target.isManualTarget();
+        if (this == TESTING || this == TEAM_LEAD_APPROVAL || this == PROJECT_MANAGER_APPROVAL
+                || this == RESOLVED || !target.isManualTarget()) return false;
+        if (this.isNextDeveloperStatus(target)) return true;
+        // A manager may explicitly send work back for another implementation cycle, but
+        // cannot move it forward past a required development stage.
+        return target == IN_PROGRESS && this != OPEN;
     }
 }

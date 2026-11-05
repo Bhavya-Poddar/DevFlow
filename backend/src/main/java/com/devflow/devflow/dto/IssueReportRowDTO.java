@@ -7,8 +7,8 @@ public class IssueReportRowDTO {
     private final String title;
     private final String priority;
     private final String status;
-    private final UserResponseDTO developer;
-    private final UserResponseDTO tester;
+    private final CollaboratorResponseDTO developer;
+    private final CollaboratorResponseDTO tester;
     private final LocalDateTime reportedAt;
     private final LocalDateTime createdAt;
     private final LocalDateTime updatedAt;
@@ -19,7 +19,7 @@ public class IssueReportRowDTO {
     private final String testNotes;
 
     public IssueReportRowDTO(Long id, String title, String priority, String status,
-            UserResponseDTO developer, UserResponseDTO tester, LocalDateTime reportedAt,
+            CollaboratorResponseDTO developer, CollaboratorResponseDTO tester, LocalDateTime reportedAt,
             LocalDateTime createdAt, LocalDateTime updatedAt, String testStatus, String testResult,
             LocalDateTime testStartedAt, LocalDateTime testCompletedAt, String testNotes) {
         this.id = id;
@@ -42,8 +42,8 @@ public class IssueReportRowDTO {
     public String getTitle() { return title; }
     public String getPriority() { return priority; }
     public String getStatus() { return status; }
-    public UserResponseDTO getDeveloper() { return developer; }
-    public UserResponseDTO getTester() { return tester; }
+    public CollaboratorResponseDTO getDeveloper() { return developer; }
+    public CollaboratorResponseDTO getTester() { return tester; }
     public LocalDateTime getReportedAt() { return reportedAt; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

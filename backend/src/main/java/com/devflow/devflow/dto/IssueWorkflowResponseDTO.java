@@ -11,17 +11,17 @@ public class IssueWorkflowResponseDTO {
     private final String status;
     private final Long projectId;
     private final String projectName;
-    private final UserResponseDTO developer;
-    private final UserResponseDTO tester;
-    private final UserResponseDTO reportedBy;
+    private final CollaboratorResponseDTO developer;
+    private final CollaboratorResponseDTO tester;
+    private final CollaboratorResponseDTO reportedBy;
     private final Long sprintId;
     private final String sprintName;
     private final LocalDateTime createdAt;
     private final LocalDateTime updatedAt;
 
     public IssueWorkflowResponseDTO(Long id, String title, String description, String acceptanceCriteria, String priority, String status,
-            Long projectId, String projectName, UserResponseDTO developer, UserResponseDTO tester,
-            UserResponseDTO reportedBy, Long sprintId, String sprintName,
+            Long projectId, String projectName, CollaboratorResponseDTO developer, CollaboratorResponseDTO tester,
+            CollaboratorResponseDTO reportedBy, Long sprintId, String sprintName,
             LocalDateTime createdAt, LocalDateTime updatedAt) {
         this.id = id;
         this.title = title;
@@ -48,9 +48,9 @@ public class IssueWorkflowResponseDTO {
     public String getStatus() { return status; }
     public Long getProjectId() { return projectId; }
     public String getProjectName() { return projectName; }
-    public UserResponseDTO getDeveloper() { return developer; }
-    public UserResponseDTO getTester() { return tester; }
-    public UserResponseDTO getReportedBy() { return reportedBy; }
+    public CollaboratorResponseDTO getDeveloper() { return developer; }
+    public CollaboratorResponseDTO getTester() { return tester; }
+    public CollaboratorResponseDTO getReportedBy() { return reportedBy; }
     public Long getSprintId() { return sprintId; }
     public String getSprintName() { return sprintName; }
     public LocalDateTime getCreatedAt() { return createdAt; }

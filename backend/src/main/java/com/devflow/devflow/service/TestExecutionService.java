@@ -15,14 +15,20 @@ import org.springframework.web.server.ResponseStatusException;
 import com.devflow.devflow.dto.IssueWorkflowResponseDTO;
 import com.devflow.devflow.dto.TestCompletionRequestDTO;
 import com.devflow.devflow.dto.TestExecutionResponseDTO;
-import com.devflow.devflow.dto.UserResponseDTO;
+import com.devflow.devflow.dto.CollaboratorResponseDTO;
 import com.devflow.devflow.entity.Issue;
 import com.devflow.devflow.entity.IssueStatus;
 import com.devflow.devflow.entity.TestExecution;
 import com.devflow.devflow.entity.User;
+import com.devflow.devflow.entity.AutomationTriggerType;
 import com.devflow.devflow.repository.IssueRepository;
 import com.devflow.devflow.repository.TestExecutionRepository;
 import com.devflow.devflow.repository.UserRepository;
+import com.devflow.devflow.repository.ProjectRoleAssignmentRepository;
+import com.devflow.devflow.repository.TeamRoleAssignmentRepository;
+import com.devflow.devflow.entity.ProjectRoleAssignment;
+import com.devflow.devflow.entity.TeamRoleAssignment;
+import com.devflow.devflow.service.ProjectAccessService;
 
 @Service
 public class TestExecutionService {
@@ -34,17 +40,32 @@ public class TestExecutionService {
     private final UserRepository userRepository;
     private final AuditLogServices auditLogService;
     private final NotificationService notificationService;
+    private final AutomationEventService automationEventService;
+    private final ProjectAccessService projectAccessService;
+    private final EffectivePermissionService permissions;
+    private final ProjectRoleAssignmentRepository projectRoles;
+    private final TeamRoleAssignmentRepository teamRoles;
 
     public TestExecutionService(IssueRepository issueRepository,
             TestExecutionRepository testExecutionRepository,
             UserRepository userRepository,
             AuditLogServices auditLogService,
-            NotificationService notificationService) {
+            NotificationService notificationService,
+            AutomationEventService automationEventService,
+            ProjectAccessService projectAccessService,
+            EffectivePermissionService permissions,
+            ProjectRoleAssignmentRepository projectRoles,
+            TeamRoleAssignmentRepository teamRoles) {
         this.issueRepository = issueRepository;
         this.testExecutionRepository = testExecutionRepository;
         this.userRepository = userRepository;
         this.auditLogService = auditLogService;
         this.notificationService = notificationService;
+        this.automationEventService = automationEventService;
+        this.projectAccessService = projectAccessService;
+        this.permissions = permissions;
+        this.projectRoles = projectRoles;
+        this.teamRoles = teamRoles;
     }
 
     public List<IssueWorkflowResponseDTO> getQueue() {
@@ -52,30 +73,39 @@ public class TestExecutionService {
             .stream().map(this::toIssueResponse).toList();
     }
 
+    @Transactional(readOnly = true)
+    public List<IssueWorkflowResponseDTO> getQueue(String actorEmail) {
+        return visibleToActor(issueRepository.findByStatusAndTesterIsNotNullOrderByUpdatedAtAsc(
+            IssueStatus.READY_FOR_TESTING.name()), actorEmail);
+    }
+
+    @Transactional(readOnly = true)
     public List<IssueWorkflowResponseDTO> getMyQueue(String testerEmail) {
         User tester = requireTester(testerEmail);
-        return issueRepository.findByTesterIdAndStatusInOrderByUpdatedAtAsc(
-                tester.getId(), List.of(IssueStatus.READY_FOR_TESTING.name(), IssueStatus.TESTING.name()))
-            .stream().map(this::toIssueResponse).toList();
+        return visibleToActor(issueRepository.findByTesterIdAndStatusInOrderByUpdatedAtAsc(
+                tester.getId(), List.of(IssueStatus.READY_FOR_TESTING.name(), IssueStatus.TESTING.name())), testerEmail);
     }
 
     @Transactional
     public TestExecutionResponseDTO startTesting(Long issueId, String testerEmail) {
-        User tester = requireAuthorizedActor(testerEmail);
+        User tester = requireEnabledActor(testerEmail);
         Issue issue = getIssueForUpdate(issueId);
+        projectAccessService.requireProjectAccess(issue.getProject(), testerEmail);
+        permissions.require(testerEmail, "TEST_EXECUTE", projectId(issue), null);
         requireAssignedTesterOrAdmin(issue, tester);
         if (!IssueStatus.READY_FOR_TESTING.name().equals(issue.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Issue is not ready for testing");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Task is not ready for testing");
         }
         if (testExecutionRepository.existsByIssueIdAndStatus(issueId, "IN_PROGRESS")) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "An active test execution already exists for this issue");
+                "An active test execution already exists for this task");
         }
 
         LocalDateTime now = LocalDateTime.now();
         TestExecution execution = new TestExecution();
         execution.setIssue(issue);
         execution.setTester(tester);
+        execution.setWorkflowCycle(issue.getWorkflowCycle());
         execution.setStatus("IN_PROGRESS");
         execution.setStartedAt(now);
         execution.setCreatedAt(now);
@@ -83,8 +113,11 @@ public class TestExecutionService {
 
         issue.setStatus(IssueStatus.TESTING.name());
         issueRepository.save(issue);
-        auditLogService.createLog("TEST_STARTED", "Testing started for issue '" + issue.getTitle() + "'", issueId, tester.getId());
-        notifyDeveloper(issue, tester, "TEST_STARTED", "Testing started for issue '" + issue.getTitle() + "'");
+        automationEventService.enqueue(AutomationTriggerType.TASK_STATUS_CHANGED, issue,
+            IssueStatus.READY_FOR_TESTING.name(), IssueStatus.TESTING.name(), "test-start:" + savedExecution.getId());
+        auditLogService.createLog("TEST_STARTED",
+            "targetType=ISSUE; targetId=" + issueId + "; testing started", issueId, tester.getId());
+        notifyDeveloper(issue, tester, "TEST_STARTED", "Testing started for task '" + issue.getTitle() + "'");
         return toExecutionResponse(savedExecution);
     }
 
@@ -93,11 +126,13 @@ public class TestExecutionService {
         if (request == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Test result is required");
         }
-        User tester = requireAuthorizedActor(testerEmail);
+        User tester = requireEnabledActor(testerEmail);
         Issue issue = getIssueForUpdate(issueId);
+        projectAccessService.requireProjectAccess(issue.getProject(), testerEmail);
+        permissions.require(testerEmail, "TEST_EXECUTE", projectId(issue), null);
         requireAssignedTesterOrAdmin(issue, tester);
         if (!IssueStatus.TESTING.name().equals(issue.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Issue is not being tested");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Task is not being tested");
         }
 
         String result = request.getResult() == null ? "" : request.getResult().trim().toUpperCase(Locale.ROOT);
@@ -131,82 +166,125 @@ public class TestExecutionService {
         execution.setCompletedAt(completedAt);
         TestExecution savedExecution = testExecutionRepository.save(execution);
 
-        issue.setStatus("PASSED".equals(result) ? IssueStatus.RESOLVED.name() : IssueStatus.IN_PROGRESS.name());
+        issue.setStatus("PASSED".equals(result)
+            ? IssueStatus.TEAM_LEAD_APPROVAL.name() : IssueStatus.IN_PROGRESS.name());
+        if ("FAILED".equals(result)) issue.setWorkflowCycle(issue.getWorkflowCycle() + 1);
         issueRepository.save(issue);
 
+        automationEventService.enqueue(AutomationTriggerType.TASK_STATUS_CHANGED, issue,
+            IssueStatus.TESTING.name(), issue.getStatus(), "test-complete:" + savedExecution.getId());
+        automationEventService.enqueue("PASSED".equals(result)
+                ? AutomationTriggerType.TESTING_PASSED : AutomationTriggerType.TESTING_FAILED,
+            issue, IssueStatus.TESTING.name(), issue.getStatus(), "test-execution:" + savedExecution.getId());
+
         String action = "PASSED".equals(result) ? "TEST_PASSED" : "TEST_FAILED";
-        String details = buildOutcomeDetails(issue, result, execution);
+        String details = buildOutcomeDetails(issue, result);
         auditLogService.createLog(action, details, issueId, tester.getId());
-        notifyDeveloper(issue, tester, action, details);
+        if ("PASSED".equals(result)) {
+            notifyApprovers(issue, tester, "ISSUE_APPROVE_TEAM_LEAD", "TEST_PASSED_AWAITING_TEAM_LEAD",
+                "Testing passed. This task is waiting for your Team Lead approval.");
+        } else {
+            notifyDeveloper(issue, tester, "TEST_FAILED",
+                "Testing failed for task '" + issue.getTitle() + "'. Remark: " + notes);
+        }
         return toExecutionResponse(savedExecution);
     }
 
     public List<TestExecutionResponseDTO> getHistory(Long issueId) {
         if (!issueRepository.existsById(issueId)) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Issue not found");
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found");
         }
         return testExecutionRepository.findByIssueIdOrderByCreatedAtDesc(issueId)
             .stream().map(this::toExecutionResponse).toList();
     }
 
+    @Transactional(readOnly = true)
+    public List<TestExecutionResponseDTO> getHistory(Long issueId, String actorEmail) {
+        projectAccessService.requireIssueAccess(issueId, actorEmail);
+        return getHistory(issueId);
+    }
+
+    private List<IssueWorkflowResponseDTO> visibleToActor(List<Issue> issues, String actorEmail) {
+        java.util.Set<Long> visibleProjectIds = new java.util.HashSet<>(
+            projectAccessService.visibleProjectIds(actorEmail));
+        return issues.stream()
+            .filter(issue -> issue.getProject() == null || visibleProjectIds.contains(issue.getProject().getId()))
+            .map(this::toIssueResponse).toList();
+    }
+
     private User requireTester(String email) {
         User user = userRepository.findByEmailIgnoreCase(email)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
-        if (!user.isEnabled() || !"TESTER".equals(user.getRole())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only TESTER users can perform this action");
+        if (!user.isEnabled() || !permissions.hasAnywhere(email, "TESTING_MY_READ")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Testing queue permission is not granted");
         }
         return user;
     }
 
-    private User requireAuthorizedActor(String email) {
+    private User requireEnabledActor(String email) {
         User user = userRepository.findByEmailIgnoreCase(email)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
-        if (!user.isEnabled() || !("TESTER".equals(user.getRole()) || "ADMIN".equals(user.getRole()))) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only TESTER or ADMIN users can perform this action");
+        if (!user.isEnabled()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Disabled users cannot perform this action");
         }
         return user;
     }
 
     private Issue getIssueForUpdate(Long issueId) {
         return issueRepository.findByIdForUpdate(issueId)
-            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Issue not found"));
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found"));
     }
 
     private void requireAssignedTester(Issue issue, User tester) {
         if (issue.getTester() == null || !Objects.equals(issue.getTester().getId(), tester.getId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Issue is assigned to another tester");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Task is assigned to another tester");
         }
     }
 
     private void requireAssignedTesterOrAdmin(Issue issue, User actor) {
-        if ("ADMIN".equals(actor.getRole())) return;
+        if (permissions.hasGlobal(actor.getEmail(), "TESTING_OVERRIDE")) return;
         requireAssignedTester(issue, actor);
+    }
+
+    private Long projectId(Issue issue) {
+        return issue.getProject() == null ? null : issue.getProject().getId();
     }
 
     private String clean(String value) {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
-    private String buildOutcomeDetails(Issue issue, String result, TestExecution execution) {
-        return "Issue '" + issue.getTitle() + "' " + result + " testing"
-            + appendDetail("Scenario", execution.getTestScenario())
-            + appendDetail("Expected", execution.getExpectedResult())
-            + appendDetail("Actual", execution.getActualResult())
-            + appendDetail("Notes", execution.getNotes());
-    }
-
-    private String appendDetail(String label, String value) {
-        return value == null || value.isBlank() ? "" : "; " + label + ": " + value;
+    private String buildOutcomeDetails(Issue issue, String result) {
+        return "targetType=ISSUE; targetId=" + issue.getId() + "; testOutcome=" + result;
     }
 
     private void notifyDeveloper(Issue issue, User tester, String type, String message) {
         User developer = issue.getAssignedUser();
-        if (developer == null || Objects.equals(developer.getId(), tester.getId())) return;
-        try {
-            notificationService.createNotification(developer, type, message);
-        } catch (RuntimeException exception) {
-            logger.warn("Could not create {} notification for issue {}", type, issue.getId(), exception);
+        if (developer == null || Objects.equals(developer.getId(), tester.getId()) || !developer.isEnabled()) return;
+        notificationService.createNotification(developer, type, message, NotificationTargetPaths.issue(issue.getId()));
+    }
+
+    private void notifyApprovers(Issue issue, User tester, String permission, String type, String message) {
+        if (issue.getProject() == null || issue.getProject().getId() == null) return;
+        Long projectId = issue.getProject().getId();
+        java.util.Map<Long, User> recipients = new java.util.LinkedHashMap<>();
+        for (ProjectRoleAssignment assignment : projectRoles.findByProjectId(projectId)) {
+            User user = assignment.getUser();
+            if (user.isEnabled() && permissions.has(user.getEmail(), permission, projectId, null)) {
+                recipients.put(user.getId(), user);
+            }
         }
+        if (issue.getProject().getTeam() != null) {
+            for (TeamRoleAssignment assignment : teamRoles.findByTeamId(issue.getProject().getTeam().getId())) {
+                User user = assignment.getUser();
+                if (user.isEnabled() && permissions.has(user.getEmail(), permission, projectId, null)) {
+                    recipients.put(user.getId(), user);
+                }
+            }
+        }
+        recipients.values().stream().filter(user -> !user.getId().equals(tester.getId()))
+            .forEach(user -> notificationService.createNotification(user, type, message,
+                NotificationTargetPaths.issue(issue.getId())));
     }
 
     private IssueWorkflowResponseDTO toIssueResponse(Issue issue) {
@@ -231,8 +309,8 @@ public class TestExecutionService {
             execution.getStartedAt(), execution.getCompletedAt(), execution.getCreatedAt());
     }
 
-    private UserResponseDTO toUserResponse(User user) {
+    private CollaboratorResponseDTO toUserResponse(User user) {
         if (user == null) return null;
-        return new UserResponseDTO(user.getId(), user.getName(), user.getEmail(), user.getRole(), user.getAvatarUrl());
+        return new CollaboratorResponseDTO(user);
     }
 }

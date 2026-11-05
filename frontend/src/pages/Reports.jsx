@@ -1,22 +1,290 @@
+import { apiUrl } from "../services/apiConfig";
 import { useEffect, useMemo, useState } from "react";
-const API="http://localhost:8080/api";
-const list=d=>Array.isArray(d)?d:Array.isArray(d?.content)?d.content:[];
-const statusList=["OPEN","IN_PROGRESS","CODE_REVIEW","READY_FOR_TESTING","TESTING","RESOLVED","CLOSED"];
-export default function Reports(){
- const [user,setUser]=useState(null),[projects,setProjects]=useState([]),[projectId,setProjectId]=useState(""),[report,setReport]=useState([]),[serverSummary,setServerSummary]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState(""),[filters,setFilters]=useState({sprint:"ALL",developer:"ALL",tester:"ALL",status:"ALL",result:"ALL"});
- const headers=useMemo(() => ({ Authorization: `Bearer ${localStorage.getItem("token")}` }), []);
- useEffect(()=>{(async()=>{const [u,p]=await Promise.all([fetch(`${API}/users/me`,{headers}),fetch(`${API}/projects`,{headers})]);if(!u.ok||!p.ok)throw new Error("Could not load report access or projects.");const me=await u.json();const ps=list(await p.json());setUser(me);setProjects(ps);if(ps.length)setProjectId(me.role==="ADMIN"?"ALL":String(ps[0].id));else setLoading(false);})().catch(e=>{setError(e.message);setLoading(false);});},[headers]);
- useEffect(()=>{if(!projectId)return;let active=true;const load=()=>{setLoading(true);setError("");const ids=projectId==="ALL"?projects.map(p=>p.id):[projectId];Promise.all(ids.map(id=>fetch(`${API}/reports/projects/${id}`,{headers}).then(r=>{if(!r.ok)throw new Error("Could not load the project lifecycle report.");return r.json();}))).then(data=>{if(active){setReport(data.flatMap(d=>list(d?.issues??d?.rows??d?.records??d?.data??d)));setServerSummary(projectId==="ALL"?null:(data[0]?.summary||data[0]?.metrics||null));}}).catch(e=>{if(active)setError(e.message);}).finally(()=>{if(active)setLoading(false);});};void Promise.resolve().then(load);return()=>{active=false;};},[projectId,projects,headers]);
- const filtered=useMemo(()=>report.filter(row=>(filters.sprint==="ALL"||String(row.sprint?.id??row.sprintId??"")===filters.sprint)&&(filters.developer==="ALL"||String(row.developer?.id??row.developerId??row.assignedUser?.id??"")===filters.developer)&&(filters.tester==="ALL"||String(row.tester?.id??row.testerId??"")===filters.tester)&&(filters.status==="ALL"||row.currentStatus===filters.status||row.status===filters.status)&&(filters.result==="ALL"||row.testResult===filters.result||row.result===filters.result)),[report,filters]);
- const choose=(k,v)=>setFilters(old=>({...old,[k]:v}));const unique=(key,id)=>[...new Map(report.map(r=>[String(r[id]??r[key]?.id??""),{id:r[id]??r[key]?.id,name:r[key]?.name??r[`${key}Name`]??"Unassigned"}]).filter(([id])=>id)).values()];
- const summary=serverSummary||{};const input="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white";
- return <main className="mx-auto max-w-7xl space-y-7"><header><p className="text-sm font-semibold uppercase tracking-wide text-blue-400">ISSUE LIFECYCLE</p><h1 className="mt-2 text-3xl font-bold text-white">Reports</h1><p className="mt-2 text-gray-400">Follow every project issue from reporting through testing and resolution.</p></header>
- <div className="flex flex-wrap items-center gap-3"><label htmlFor="report-project" className="text-sm text-gray-400">Project</label><select id="report-project" className={input} value={projectId} onChange={e=>setProjectId(e.target.value)}><option value="">Select project</option>{user?.role==="ADMIN"&&<option value="ALL">All projects</option>}{projects.map(p=><option key={p.id} value={p.id}>{p.name||`Project ${p.id}`}</option>)}</select><span className="text-xs text-gray-500">{user?.role==="ADMIN"?"System project report":user?.role==="PROJECT_MANAGER"?"Project and team report":user?.role==="DEVELOPER"?"Engineering issue report":user?.role==="TESTER"?"Testing lifecycle report":"Read-only project report"}</span></div>
- {error&&<p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">{error}</p>}{loading?<p className="text-gray-400">Loading project report…</p>:!projectId?<Empty text="No projects are available for reporting."/>:<>
- <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">{[["Total Issues",summary.totalIssues??summary.total??report.length],["Completed",summary.completed??summary.completedIssues??report.filter(r=>["RESOLVED","CLOSED"].includes(r.currentStatus||r.status)).length],["Testing",summary.testing??summary.inTesting??report.filter(r=>["READY_FOR_TESTING","TESTING"].includes(r.currentStatus||r.status)).length],["Passed",summary.passed??summary.passedTests??report.filter(r=>(r.testResult||r.result)==="PASSED").length],["Failed",summary.failed??summary.failedTests??report.filter(r=>(r.testResult||r.result)==="FAILED").length],["Unassigned",summary.unassigned??summary.unassignedIssues??report.filter(r=>!(r.developer||r.assignedUser||r.developerName)).length]].map(([label,val])=><div key={label} className="rounded-xl border border-gray-800 bg-gray-900 p-4"><p className="text-sm text-gray-400">{label}</p><p className="mt-2 text-2xl font-bold text-white">{val}</p></div>)}</section>
- {projectId!=="ALL"&&(summary.averageResolutionTime??summary.averageResolutionTimeDays)!=null&&<p className="text-sm text-gray-400">Average resolution time: <span className="font-semibold text-white">{summary.averageResolutionTime??summary.averageResolutionTimeDays}{summary.averageResolutionTimeDays!=null?" days":""}</span></p>}
- <section className="flex flex-wrap gap-3">{[["sprint","All sprints",unique("sprint","sprintId")],["developer","All developers",unique("developer","developerId")],["tester","All testers",unique("tester","testerId")]].map(([key,label,options])=><select key={key} aria-label={label} className={input} value={filters[key]} onChange={e=>choose(key,e.target.value)}><option value="ALL">{label}</option>{options.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}</select>)}<select aria-label="Filter status" className={input} value={filters.status} onChange={e=>choose("status",e.target.value)}><option value="ALL">All statuses</option>{statusList.map(s=><option key={s}>{s}</option>)}</select><select aria-label="Filter test result" className={input} value={filters.result} onChange={e=>choose("result",e.target.value)}><option value="ALL">All results</option><option value="PASSED">PASSED</option><option value="FAILED">FAILED</option></select></section>
- <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900"><div className="overflow-x-auto"><table className="min-w-[1050px] w-full text-left text-sm"><thead className="bg-gray-800 text-xs uppercase text-gray-400"><tr>{["Issue","Developer","Tester","Reported","Testing Started","Testing Completed","Test Result","Current Status"].map(x=><th key={x} className="px-4 py-3">{x}</th>)}</tr></thead><tbody className="divide-y divide-gray-800">{filtered.map((r,i)=><tr key={r.issueId||r.id||i} className="hover:bg-gray-800/40"><td className="px-4 py-4 font-medium text-white">{r.title||r.issue?.title||`Issue #${r.issueId||r.id||"—"}`}</td><td className="px-4 py-4 text-gray-300">{r.developer?.name||r.assignedUser?.name||r.developerName||"Unassigned"}</td><td className="px-4 py-4 text-gray-300">{r.tester?.name||r.testerName||"Unassigned"}</td><td className="px-4 py-4 text-gray-400">{format(r.reportedAt||r.createdAt)}</td><td className="px-4 py-4 text-gray-400">{format(r.testingStartedAt||r.startedAt)}</td><td className="px-4 py-4 text-gray-400">{format(r.testingCompletedAt||r.completedAt)}</td><td className="px-4 py-4">{r.testResult||r.result||"—"}</td><td className="px-4 py-4"><span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-xs text-blue-300">{String(r.currentStatus||r.status||"UNKNOWN").replaceAll("_"," ")}</span></td></tr>)}{filtered.length===0&&<tr><td colSpan="8" className="px-4 py-12 text-center text-gray-500">No report issues match these filters.</td></tr>}</tbody></table></div></section>
- </>}</main>;
+import { loadDropdownOptions, dropdownLabel } from "../services/dropdownOptions";
+import "./Reports.css";
+
+const API = apiUrl("/api");
+const STATUS_META = [
+  { id: "OPEN", label: "Open", color: "#7384a3" },
+  { id: "IN_PROGRESS", label: "In progress", color: "#4f91ff" },
+  { id: "CODE_REVIEW", label: "Code review", color: "#a17cff" },
+  { id: "READY_FOR_TESTING", label: "Ready for test", color: "#35c8c0" },
+  { id: "TESTING", label: "Testing", color: "#e4aa58" },
+  { id: "RESOLVED", label: "Resolved", color: "#45c58c" },
+];
+const list = value => Array.isArray(value) ? value : Array.isArray(value?.content) ? value.content : [];
+const titleCase = value => String(value || "Unknown").replaceAll("_", " ").toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase());
+
+export default function Reports() {
+  const [projects, setProjects] = useState([]);
+  const [sprints, setSprints] = useState([]);
+  const [issues, setIssues] = useState([]);
+  const [today, setToday] = useState(null);
+  const [draftFilters, setDraftFilters] = useState({ developer: "ALL", sprint: "ALL", range: "30" });
+  const [appliedFilters, setAppliedFilters] = useState({ developer: "ALL", sprint: "ALL", range: "30" });
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [reportRows, setReportRows] = useState([]);
+  const [burndownResult, setBurndownResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadedQuery, setLoadedQuery] = useState(null);
+  const [error, setError] = useState("");
+  const [filters, setFilters] = useState({ tester: "ALL", status: "ALL", result: "ALL" });
+  const [statusOptions, setStatusOptions] = useState(STATUS_META.map(item=>({code:item.id,displayLabel:item.label})));
+  const [resultOptions, setResultOptions] = useState([{code:"PASSED",displayLabel:"Passed"},{code:"FAILED",displayLabel:"Failed"}]);
+  const [priorityOptions, setPriorityOptions] = useState([]);
+  const [rangeOptions, setRangeOptions] = useState([{code:"30",displayLabel:"Last 30 days"},{code:"90",displayLabel:"Last 90 days"},{code:"ALL",displayLabel:"All time"}]);
+  const visibleStatusMeta = STATUS_META.map(item=>({...item,label:dropdownLabel(statusOptions,item.id,item.label)}));
+  const headers = useMemo(() => ({ Authorization: `Bearer ${localStorage.getItem("token")}` }), []);
+
+  useEffect(() => {
+    let active=true;
+    Promise.all([loadDropdownOptions("ISSUE_STATUS"),loadDropdownOptions("TEST_RESULT"),loadDropdownOptions("REPORTING_RANGE"),loadDropdownOptions("PRIORITY")])
+      .then(([statusData,resultData,rangeData,priorityData])=>{if(active){if(statusData.length)setStatusOptions(statusData);if(resultData.length)setResultOptions(resultData);if(rangeData.length)setRangeOptions(rangeData);if(priorityData.length)setPriorityOptions(priorityData);}})
+      .catch(()=>{});
+    return ()=>{active=false;};
+  },[]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const responses = await Promise.all([
+        fetch(`${API}/projects`, { headers }),
+        fetch(`${API}/sprints`, { headers }),
+        fetch(`${API}/issues`, { headers }),
+      ]);
+      if (responses.some(response => !response.ok)) throw new Error("Could not load your projects, tasks, and sprints.");
+      const [projectData, sprintData, issueData] = await Promise.all(responses.map(response => response.json()));
+      if (!active) return;
+      const projectList = list(projectData);
+      const sprintList = list(sprintData);
+      setProjects(projectList);
+      setSprints(sprintList);
+      setIssues(list(issueData));
+      setToday(new Date());
+      const activeSprint = sprintList.find(sprint => ["ACTIVE", "IN_PROGRESS"].includes(String(sprint.status || "").toUpperCase()));
+      const initialSprint = activeSprint ? String(activeSprint.id) : "ALL";
+      setDraftFilters({ developer: "ALL", sprint: initialSprint, range: "30" });
+      setAppliedFilters({ developer: "ALL", sprint: initialSprint, range: "30" });
+    })().catch(reason => { if (active) setError(reason.message || "Could not load report filters."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [headers]);
+
+  useEffect(() => {
+    if (!projects.length) return undefined;
+    let active = true;
+    const sprintId = appliedFilters.sprint;
+    const selectedSprint = sprints.find(sprint => String(sprint.id) === sprintId);
+    const projectIds = selectedSprint?.project?.id
+      ? [selectedSprint.project.id] : projects.map(project => project.id);
+    const query = sprintId === "ALL" ? "" : `?sprintId=${encodeURIComponent(sprintId)}`;
+    Promise.all(projectIds.map(id => fetch(`${API}/reports/projects/${id}${query}`, { headers }).then(response => {
+      if (!response.ok) throw new Error("Could not load the sprint report.");
+      return response.json();
+    })))
+      .then(data => { if (active) setReportRows(data.flatMap(item => list(item?.issues))); })
+      .catch(reason => { if (active) { setReportRows([]); setError(reason.message || "Could not load the sprint report."); } })
+      .finally(() => { if (active) setLoadedQuery(`${sprintId}|${refreshKey}`); });
+    return () => { active = false; };
+  }, [appliedFilters.sprint, refreshKey, projects, sprints, headers]);
+
+  useEffect(() => {
+    const sprintId = appliedFilters.sprint;
+    if (sprintId === "ALL") return undefined;
+
+    let active = true;
+    const query = sprintId + "|" + refreshKey;
+    fetch(API + "/reports/sprints/" + encodeURIComponent(sprintId) + "/burndown", { headers })
+      .then(response => {
+        if (!response.ok) throw new Error("Could not load sprint burndown history.");
+        return response.json();
+      })
+      .then(data => { if (active) setBurndownResult({ query, data, error: "" }); })
+      .catch(() => { if (active) setBurndownResult({ query, data: null, error: "Could not load burndown history. Refresh to try again." }); });
+    return () => { active = false; };
+  }, [appliedFilters.sprint, refreshKey, headers]);
+  const scopedReport = useMemo(() => reportRows.filter(row => {
+    const date = row.updatedAt || row.createdAt || row.reportedAt;
+    const inRange = appliedFilters.range === "ALL" || (date
+      && today && new Date(date).getTime() >= today.getTime() - Number(appliedFilters.range) * 24 * 60 * 60 * 1000);
+    return (appliedFilters.developer === "ALL" || String(row.developer?.id ?? "") === appliedFilters.developer) && inRange;
+  }), [reportRows, appliedFilters, today]);
+  const report = scopedReport;
+  const filtered = useMemo(() => scopedReport.filter(row =>
+    (filters.tester === "ALL" || String(row.tester?.id ?? "") === filters.tester)
+    && (filters.status === "ALL" || row.status === filters.status)
+    && (filters.result === "ALL" || row.testResult === filters.result)), [scopedReport, filters]);
+  const counts = useMemo(() => Object.fromEntries(STATUS_META.map(status => [status.id,
+    scopedReport.filter(row => row.status === status.id).length])), [scopedReport]);
+  const resolved = counts.RESOLVED || 0;
+  const remaining = Math.max(report.length - resolved, 0);
+  const completion = report.length ? Math.round((resolved / report.length) * 100) : 0;
+  const workload = useMemo(() => {
+    const people = new Map();
+    report.forEach(row => {
+      if (!row.developer?.id) return;
+      const person = people.get(row.developer.id) || { ...row.developer, count: 0 };
+      person.count += 1;
+      people.set(row.developer.id, person);
+    });
+    return [...people.values()].sort((a, b) => b.count - a.count).slice(0, 5);
+  }, [report]);
+  const choose = (key, value) => setFilters(current => ({ ...current, [key]: value }));
+  const selectedSprint = sprints.find(sprint => String(sprint.id) === appliedFilters.sprint);
+  const reportLoading = loadedQuery !== `${appliedFilters.sprint}|${refreshKey}`;
+  const currentBurndownQuery = appliedFilters.sprint + "|" + refreshKey;
+  const hasBurndownResult = burndownResult?.query === currentBurndownQuery;
+  const burndown = hasBurndownResult ? burndownResult.data : null;
+  const burndownError = hasBurndownResult ? burndownResult.error : "";
+  const burndownLoading = appliedFilters.sprint !== "ALL" && !hasBurndownResult;
+  const summaryIssues = issues.filter(issue => appliedFilters.sprint === "ALL"
+    || String(issue.sprint?.id ?? "") === appliedFilters.sprint);
+  const blockedCount = summaryIssues.filter(issue => issue.blocked).length;
+  const burndownLiveRemaining = summaryIssues.filter(issue => issue.status !== "RESOLVED").length;
+  const assignedDevelopers = new Set(report.map(row => row.developer?.id).filter(Boolean)).size;
+  const openCount = Math.max(report.length - resolved, 0);
+  const daysRemaining = selectedSprint?.endDate && today
+    ? Math.max(0, Math.ceil((new Date(`${selectedSprint.endDate}T23:59:59`).getTime() - today.getTime()) / 86400000)) : null;
+  const sprintTitle = selectedSprint?.name || (appliedFilters.sprint === "ALL" ? "All sprints" : `Sprint ${appliedFilters.sprint}`);
+
+  if (loading) return <main className="df-sprint-page"><div className="df-sprint-loading">Loading sprint analytics…</div></main>;
+
+  return <main className="df-sprint-page">
+    <header className="df-sprint-titlebar"><div><h1>Engineering Team Effort Tracker</h1><p>Sprint &amp; Project Effort Overview <i /> {selectedSprint?.name || "All available sprints"}</p></div><button type="button" onClick={() => { setError(""); setRefreshKey(value => value + 1); }} disabled={reportLoading} className="df-sprint-refresh">↻ <span>Refresh</span></button></header>
+
+    <section className="df-sprint-toolbar" aria-label="Sprint filters">
+      <label aria-label="Filter developer"><select value={draftFilters.developer} onChange={event => setDraftFilters(current => ({ ...current, developer: event.target.value }))}><option value="ALL">All Developers</option>{uniqueUsers(reportRows, "developer").map(person => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+      <label aria-label="Select sprint"><select value={draftFilters.sprint} onChange={event => setDraftFilters(current => ({ ...current, sprint: event.target.value }))}><option value="ALL">All Sprints</option>{sprints.map(sprint => <option key={sprint.id} value={sprint.id}>{sprint.name || `Sprint ${sprint.id}`}{["ACTIVE", "IN_PROGRESS"].includes(String(sprint.status || "").toUpperCase()) ? " (Current)" : ""}</option>)}</select></label>
+      <label aria-label="Select reporting range"><select value={draftFilters.range} onChange={event => setDraftFilters(current => ({ ...current, range: event.target.value }))}>{rangeOptions.map(option=><option key={option.code} value={option.code}>{option.displayLabel}</option>)}</select></label>
+      <button type="button" className="df-sprint-apply" onClick={() => { setError(""); setAppliedFilters(draftFilters); }}>Apply</button>
+      <button type="button" className="df-sprint-reset" aria-label="Reset filters" title="Reset filters" onClick={() => { const active = sprints.find(sprint => ["ACTIVE", "IN_PROGRESS"].includes(String(sprint.status || "").toUpperCase())); const reset = { developer: "ALL", sprint: active ? String(active.id) : "ALL", range: "30" }; setError(""); setDraftFilters(reset); setAppliedFilters(reset); }}>↺</button>
+    </section>
+
+    {error && <div className="df-sprint-alert" role="alert"><span>!</span><div><strong>Analytics could not be loaded</strong><p>{error}</p></div></div>}
+
+    <section className="df-sprint-metrics" aria-label="Sprint summary">
+      <Metric label="Tasks completed" value={resolved} detail={`${completion}% of current scope`} tone="green" icon="◉" loading={reportLoading} />
+      <Metric label="Developers assigned" value={assignedDevelopers} detail="with work in selected scope" tone="violet" icon="♙" loading={reportLoading} />
+      <Metric label="Open tickets" value={openCount} detail={`${blockedCount} currently blocked`} tone="amber" icon="▤" loading={reportLoading} />
+      <Metric label="Avg sprint velocity" value="Not tracked" detail="story points are not recorded" tone="blue" icon="ϟ" />
+    </section>
+
+    <section className="df-sprint-chart-grid">
+      <article className="df-sprint-panel df-sprint-burndown">
+        <PanelHeading kicker="BURNDOWN" title={sprintTitle + " Burndown"} detail="Remaining tasks · observed daily history" tag={burndownLoading ? "LOADING" : burndownError ? "ERROR" : burndown?.snapshots?.length ? "TRACKING" : "NO HISTORY"} />
+        <BurndownChart data={appliedFilters.sprint === "ALL" ? null : burndown} loading={appliedFilters.sprint !== "ALL" && burndownLoading} error={appliedFilters.sprint === "ALL" ? "" : burndownError} currentRemaining={burndownLiveRemaining} />
+      </article>
+      <article className="df-sprint-panel df-sprint-summary">
+        <PanelHeading kicker="SPRINT SNAPSHOT" title={`${sprintTitle} Summary`} detail="Live values from the selected sprint" />
+        <SummaryRow label="Sprint goal" value={selectedSprint?.goal || "No sprint goal set"} />
+        <SummaryRow label="Total tasks" value={`${reportLoading ? "—" : report.length} tasks`} />
+        <SummaryRow label="Tasks completed" value={`${reportLoading ? "—" : resolved} tasks`} />
+        <SummaryRow label="Tasks remaining" value={`${reportLoading ? "—" : remaining} tasks`} />
+        <SummaryRow label="Completion" value={`${reportLoading ? "—" : completion}%`} />
+        <SummaryRow label="Days remaining" value={daysRemaining == null ? "Sprint dates not set" : `${daysRemaining} days`} />
+        <SummaryRow label="Blockers" value={`${blockedCount} active`} />
+        <SummaryRow label="Developers assigned" value={`${assignedDevelopers} assigned`} />
+        <p className="df-sprint-data-note">Story-point estimates and historical burndown snapshots are not recorded by the current backend.</p>
+      </article>
+    </section>
+
+    <section className="df-sprint-insight-grid">
+      <article className="df-sprint-panel df-sprint-workload-panel">
+        <PanelHeading kicker="TEAM EFFORT" title="Developer workload" detail="Assigned task count · selected sprint" />
+        {workload.length ? <div className="df-sprint-workload-list">{workload.map(person => <div className="df-sprint-workload-row" key={person.id}><div className="df-sprint-person-avatar">{initials(person.name)}</div><div className="df-sprint-person-main"><div><strong>{person.name || "Developer"}</strong><span>{titleCase(person.role)}</span></div><div className="df-sprint-workload-track"><i style={{ width: `${Math.max(8, (person.count / Math.max(...workload.map(item => item.count))) * 100)}%` }} /></div></div><b>{person.count}<small> tasks</small></b></div>)}</div> : <Empty text="No developer assignments in this sprint." />}
+      </article>
+      <article className="df-sprint-panel df-sprint-status-panel">
+        <PanelHeading kicker="TICKET STATUS" title="Ticket status breakdown" detail="Live task state · selected sprint" />
+        <div className="df-sprint-status-layout"><StatusDonut counts={counts} total={report.length} /><ul className="df-sprint-status-list">{visibleStatusMeta.map(status => <li key={status.id}><span><i style={{ "--status-color": status.color }} />{status.label}</span><strong>{counts[status.id] || 0}</strong></li>)}</ul></div>
+      </article>
+    </section>
+
+    <section className="df-sprint-tasks-section">
+      <div className="df-sprint-section-heading"><div><p className="df-sprint-kicker">SPRINT WORK</p><h2>Task detail</h2><p>Filter the live task report by assignment, status, or test result.</p></div><span className="df-sprint-table-count">{filtered.length} {filtered.length === 1 ? "task" : "tasks"}</span></div>
+      <div className="df-sprint-table-filters">
+        <SelectFilter label="Tester" value={filters.tester} onChange={value => choose("tester", value)} options={uniqueUsers(report, "tester")} />
+        <label><span>Status</span><select value={filters.status} onChange={event => choose("status", event.target.value)}><option value="ALL">All statuses</option>{visibleStatusMeta.map(status => <option key={status.id} value={status.id}>{status.label}</option>)}</select></label>
+        <label><span>Test result</span><select value={filters.result} onChange={event => choose("result", event.target.value)}><option value="ALL">All results</option>{resultOptions.map(option=><option key={option.code} value={option.code}>{option.displayLabel}</option>)}</select></label>
+      </div>
+      <div className="df-sprint-table-scroll"><table><thead><tr>{["Task", "Developer", "Tester", "Testing started", "Testing completed", "Result", "Status"].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>
+        {filtered.map((row, index) => <tr key={row.id || index}><td><strong>{row.title || `Task #${row.id || "—"}`}</strong><small>#{row.id ?? "—"} · {row.priority ? dropdownLabel(priorityOptions,row.priority,titleCase(row.priority)) : "No priority"}</small></td><td>{row.developer?.name || "Unassigned"}</td><td>{row.tester?.name || "Unassigned"}</td><td>{formatDate(row.testStartedAt)}</td><td>{formatDate(row.testCompletedAt)}</td><td><span className={`df-sprint-result ${row.testResult === "PASSED" ? "is-passed" : row.testResult === "FAILED" ? "is-failed" : ""}`}>{row.testResult ? dropdownLabel(resultOptions,row.testResult,titleCase(row.testResult)) : "Not tested"}</span></td><td><span className="df-sprint-task-status">{dropdownLabel(statusOptions,row.status,titleCase(row.status))}</span></td></tr>)}
+        {!reportLoading && filtered.length === 0 && <tr><td colSpan="7"><Empty text={report.length ? "No tasks match these filters." : "No tasks are assigned to this sprint yet."} /></td></tr>}
+      </tbody></table></div>
+    </section>
+  </main>;
 }
-function format(v){return v?new Date(v).toLocaleDateString():"—";}function Empty({text}){return <div className="rounded-xl border border-dashed border-gray-700 p-10 text-center text-gray-400">{text}</div>;}
+
+function BurndownChart({ data, loading, error, currentRemaining }) {
+  if (loading) return <div className="df-burndown-state" role="status">Loading recorded sprint snapshots…</div>;
+  if (error) return <div className="df-burndown-state is-error" role="alert"><strong>Burndown history unavailable</strong><span>{error}</span></div>;
+  if (!data) return <div className="df-burndown-state"><strong>Select a sprint</strong><span>Choose one sprint to view its recorded burndown history.</span></div>;
+  const points = Array.isArray(data.snapshots) ? data.snapshots : [];
+  if (!points.length) {
+    return <div className="df-burndown-state">
+      <span className="df-sprint-chart-glyph">⌁</span>
+      <strong>No burndown history yet</strong>
+      <span>Tracking starts at the first successful capture for an active sprint. Earlier dates are not backfilled.</span>
+      <small>SPRINT START: {data.sprintStartDate || "not set"} · LIVE REMAINING: {currentRemaining} tasks</small>
+    </div>;
+  }
+
+  const trackingStart = data.trackingStartedOn;
+  const sprintEnd = data.sprintEndDate || points[points.length - 1].date;
+  const baseline = Number(data.baselineRemainingIssues ?? points[0].remainingIssues ?? 0);
+  const maxValue = Math.max(1, baseline, ...points.map(point => Number(point.totalIssues || 0)));
+  const left = 62;
+  const right = 780;
+  const top = 18;
+  const bottom = 180;
+  const time = value => new Date(value + "T00:00:00Z").getTime();
+  const span = Math.max(0, time(sprintEnd) - time(trackingStart));
+  const x = value => span === 0 ? left : left + Math.max(0, Math.min(1, (time(value) - time(trackingStart)) / span)) * (right - left);
+  const y = value => bottom - (Math.max(0, Number(value || 0)) / maxValue) * (bottom - top);
+  const ticks = [...new Set([maxValue, Math.ceil(maxValue / 2), 0])];
+  const actualPath = points.map((point, index) => (index === 0 ? "M" : "L") + " " + x(point.date) + " " + y(point.remainingIssues)).join(" ");
+
+  return <div className="df-burndown-chart">
+    <p className="df-burndown-tracking-note">
+      Sprint start: <b>{data.sprintStartDate || "not set"}</b>
+      <span>Tracking began: <b>{trackingStart}</b></span>
+    </p>
+    <svg className="df-burndown-svg" viewBox="0 0 800 220" role="img"
+      aria-label={"Observed remaining task counts for " + (data.sprintName || "sprint") + " beginning " + trackingStart + ", with an ideal line from the first recorded count to zero by sprint end"}>
+      {ticks.map(value => <g key={value}>
+        <line className="df-burndown-gridline" x1={left} x2={right} y1={y(value)} y2={y(value)} />
+        <text className="df-burndown-axis-label" x={left - 10} y={y(value) + 4} textAnchor="end">{value}</text>
+      </g>)}
+      <line className="df-burndown-axis" x1={left} x2={right} y1={bottom} y2={bottom} />
+      {sprintEnd && <line className="df-burndown-ideal" x1={x(trackingStart)} y1={y(baseline)} x2={x(sprintEnd)} y2={y(0)} />}
+      {points.length > 1 && <path className="df-burndown-actual" d={actualPath} />}
+      {points.map(point => <circle className="df-burndown-point" key={point.date} cx={x(point.date)} cy={y(point.remainingIssues)} r="4">
+        <title>{point.date + ": " + point.remainingIssues + " remaining tasks (" + point.totalIssues + " total)"}</title>
+      </circle>)}
+      <text className="df-burndown-date-label" x={left} y="207" textAnchor="start">{trackingStart}</text>
+      <text className="df-burndown-date-label" x={right} y="207" textAnchor="end">{sprintEnd}</text>
+    </svg>
+    <div className="df-burndown-legend"><span><i className="is-actual" />Actual remaining tasks</span><span><i className="is-ideal" />Ideal from tracking baseline</span></div>
+    <p className="df-burndown-footnote">Each marker is a saved daily observation. The ideal line starts at the first recorded remaining count; no earlier actual values are inferred.</p>
+  </div>;
+}
+function Metric({ label, value, detail, tone, icon, loading, progress }) {
+  return <article className={`df-sprint-metric df-tone-${tone}`}><div className="df-sprint-metric-top"><span>{label}</span><i>{icon}</i></div><strong>{loading ? "—" : value}</strong><div className="df-sprint-metric-bottom">{progress != null && <span className="df-sprint-mini-track"><i style={{ width: `${progress}%` }} /></span>}<small>{detail}</small></div></article>;
+}
+function PanelHeading({ kicker, title, detail, tag }) { return <div className="df-sprint-panel-heading"><div><p>{kicker}</p><h2>{title}</h2><span>{detail}</span></div>{tag && <em>{tag}</em>}</div>; }
+function SummaryRow({ label, value }) { return <div className="df-sprint-summary-row"><span>{label}</span><strong>{value}</strong></div>; }
+function StatusDonut({ counts, total }) {
+  const radius = 53;
+  const circumference = 2 * Math.PI * radius;
+  const arcs = STATUS_META.map((status, index) => {
+    const value = total ? (counts[status.id] || 0) / total : 0;
+    const offset = STATUS_META.slice(0, index).reduce((sum, item) =>
+      sum + (total ? (counts[item.id] || 0) / total : 0) * circumference, 0);
+    return { ...status, dash: value * circumference, offset };
+  });
+  return <div className="df-sprint-donut-wrap"><svg viewBox="0 0 132 132" role="img" aria-label={`${total} tasks across sprint statuses`}><circle className="df-sprint-donut-track" cx="66" cy="66" r={radius} />{arcs.map(arc => arc.dash > 0 && <circle key={arc.id} cx="66" cy="66" r={radius} fill="none" stroke={arc.color} strokeWidth="10" strokeDasharray={`${arc.dash} ${circumference - arc.dash}`} strokeDashoffset={-arc.offset} transform="rotate(-90 66 66)" />)}</svg><div><strong>{total}</strong><span>TASKS</span></div></div>;
+}
+function SelectFilter({ label, value, onChange, options }) { return <label><span>{label}</span><select aria-label={`Filter by ${label.toLowerCase()}`} value={value} onChange={event => onChange(event.target.value)}><option value="ALL">All {label.toLowerCase()}s</option>{options.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label>; }
+function Empty({ text }) { return <div className="df-sprint-empty">{text}</div>; }
+function uniqueUsers(rows, key) { return [...new Map(rows.filter(row => row[key]?.id).map(row => [String(row[key].id), { id: String(row[key].id), name: row[key].name || `${key} #${row[key].id}` }])).values()]; }
+function initials(name) { return String(name || "D").split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase(); }
+function formatDate(value) { return value ? new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—"; }

@@ -13,6 +13,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.devflow.devflow.util.EmailAddress;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 @Entity
 @Table(uniqueConstraints = @UniqueConstraint(name = "uk_user_email", columnNames = "email"))
@@ -28,12 +29,17 @@ public class User {
     private String email;
 
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    @Schema(accessMode = Schema.AccessMode.WRITE_ONLY, description = "Account password. Never returned by API responses.")
     private String password;
 
     private String role;
 
     @Column(nullable = false, columnDefinition = "boolean default true not null")
     private boolean enabled = true;
+
+    /** Protected recovery capability; never writable through ordinary user DTOs. */
+    @Column(name = "admin_recovery", nullable = false)
+    private boolean adminRecovery;
 
     @JsonIgnore
     @Column(name = "avatar_key", length = 64)
@@ -93,6 +99,10 @@ public class User {
     public boolean isEnabled() { return enabled; }
 
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+    public boolean hasAdminRecovery() { return adminRecovery; }
+
+    public void setAdminRecovery(boolean adminRecovery) { this.adminRecovery = adminRecovery; }
 
     @JsonIgnore
     public String getAvatarKey() { return avatarKey; }

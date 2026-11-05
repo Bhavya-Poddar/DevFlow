@@ -1,0 +1,1 @@
+ALTER TABLE project ADD COLUMN category VARCHAR(64) NULL;

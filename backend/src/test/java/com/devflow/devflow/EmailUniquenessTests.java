@@ -30,21 +30,20 @@ class EmailUniquenessTests {
     @Autowired private PasswordEncoder passwordEncoder;
 
     @Test
-    void publicRegistrationNormalizesEmailAndRejectsCaseInsensitiveDuplicate() throws Exception {
+    void publicRegistrationIsDisabledAndDoesNotCreateAccounts() throws Exception {
         String canonicalEmail = uniqueEmail();
         String firstEmail = "  " + canonicalEmail.toUpperCase() + "  ";
         mockMvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"Normalized\",\"email\":\"" + firstEmail
                     + "\",\"password\":\"valid-password\"}"))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.email").value(canonicalEmail));
+            .andExpect(status().isForbidden());
 
         mockMvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"name\":\"Duplicate\",\"email\":\"" + canonicalEmail.toUpperCase()
                     + "\",\"password\":\"valid-password\"}"))
-            .andExpect(status().isConflict());
-        assertEquals(1, userRepository.findAll().stream()
-            .filter(user -> canonicalEmail.equals(user.getEmail())).count());
+            .andExpect(status().isForbidden());
+        assertEquals(0L, userRepository.findAll().stream()
+            .filter(user -> canonicalEmail.equalsIgnoreCase(user.getEmail())).count());
     }
 
     @Test
@@ -100,6 +99,7 @@ class EmailUniquenessTests {
         user.setEmail(email);
         user.setName(email);
         user.setRole(role);
+        user.setAdminRecovery("ADMIN".equals(role));
         user.setPassword(passwordEncoder.encode("test-password"));
         return userRepository.saveAndFlush(user);
     }

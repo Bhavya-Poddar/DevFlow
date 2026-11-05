@@ -1,4 +1,6 @@
-const API_URL = "http://localhost:8080/api/notifications";
+import { apiUrl } from "./apiConfig";
+
+const API_URL = apiUrl("/api/notifications");
 
 const getHeaders = () => ({
     Authorization: `Bearer ${localStorage.getItem("token")}`,
@@ -6,14 +8,30 @@ const getHeaders = () => ({
 });
 
 const getErrorMessage = async (response, fallback) => {
-    const body = await response.text();
-    if (!body) return fallback;
+    let body = "";
     try {
-        const data = JSON.parse(body);
-        return data.message || data.error || data.detail || fallback;
+        body = (await response.text()).trim();
     } catch {
-        return body;
+        // Keep the HTTP status diagnostic if the response body cannot be read.
     }
+
+    let message = "";
+    try {
+        const data = body ? JSON.parse(body) : null;
+        if (data && typeof data === "object") {
+            for (const key of ["message", "detail", "error"]) {
+                if (typeof data[key] === "string" && data[key].trim()) {
+                    message = data[key].trim();
+                    break;
+                }
+            }
+        }
+    } catch {
+        // Ignore unstructured proxy/server bodies instead of showing HTML or internals.
+    }
+
+    const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+    return `${message || fallback} (${status})`;
 };
 
 export const normalizeNotifications = (data) => {
@@ -33,6 +51,21 @@ export const normalizeNotifications = (data) => {
 export const getNotifications = async () => {
     const response = await fetch(API_URL, { headers: getHeaders() });
     if (!response.ok) throw new Error(await getErrorMessage(response, "Failed to fetch notifications."));
+    return response.json();
+};
+
+export const getNotificationPage = async ({ page = 0, size = 20, read, search } = {}) => {
+    const params = new URLSearchParams({ page: String(page), size: String(size) });
+    if (read != null) params.set("read", String(read));
+    if (search?.trim()) params.set("search", search.trim());
+    const response = await fetch(`${API_URL}/page?${params}`, { headers: getHeaders() });
+    if (!response.ok) throw new Error(await getErrorMessage(response, "Failed to fetch notification history."));
+    return response.json();
+};
+
+export const getUnreadNotificationCount = async () => {
+    const response = await fetch(`${API_URL}/unread/count`, { headers: getHeaders() });
+    if (!response.ok) throw new Error(await getErrorMessage(response, "Failed to fetch unread notification count."));
     return response.json();
 };
 

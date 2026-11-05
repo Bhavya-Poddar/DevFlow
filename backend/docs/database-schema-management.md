@@ -34,6 +34,14 @@ The current project has no earlier Flyway migrations, no baseline schema script,
 
 Profile image bytes are stored under `DEVFLOW_PROFILE_PICTURE_DIR` in production. Set it to a durable, writable directory outside the application static-resource root, restrict OS permissions to the application account, and include that directory in backups. Local development uses `${user.home}/.devflow/profile-pictures` unless `DEVFLOW_PROFILE_PICTURE_DIR` is set. Images are PNG/JPEG only, capped at 5 MB and 4096×4096 pixels, and are served from the authenticated `/api/users/{id}/avatar` resource endpoint. The API returns only an opaque generated file key internally and a stable URL; image bytes are never stored in the database.
 
+## V5 sprint burndown snapshots
+
+`V5__sprint_burndown_snapshots.sql` creates `sprint_burndown_snapshot`, which references `sprint(id)` and stores one issue-count observation per sprint and UTC calendar date. A unique `(sprint_id, snapshot_date)` constraint is the final duplicate guard. The migration does not backfill or change existing sprint or issue rows. Its foreign key uses `ON DELETE RESTRICT`; once history exists, sprint deletion is rejected with HTTP 409 so snapshots are not silently lost.
+
+The application captures an observation after startup and daily at 00:05 UTC for sprints whose status is `ACTIVE` or `IN_PROGRESS` and whose configured date range includes the current UTC date. Row locking plus the unique constraint make repeated or overlapping collection safe. The observation stores total sprint issues and all issues except `RESOLVED` as remaining. Story points are not part of this schema. Tracking starts on the first successful capture; there is no backfill for dates before it. The ideal line uses the first recorded remaining-issue count as its baseline and runs to zero at the sprint end date.
+
+Adding V5 does not make the existing database Flyway-ready. This project’s existing migrations are incremental, and a populated database with no Flyway history must not automatically execute V1–V5. Follow the existing clone-only adoption procedure: verify a restorable backup, rehearse against a clone, prove the entire schema matches the chosen baseline, explicitly baseline only the reviewed schema state, then apply only the next migration in a separately approved rollout. In particular, if V4 has not been applied, do not baseline at version 4 or run V5 against the database. Reconcile the known V2 column differences and review V1–V4 assumptions on the clone first. No baseline or migration is performed by this feature change.
+
 ## Required non-destructive preflight
 
 Use a read-only account and an authorized database tool. Never start the application in the `dev` profile against production. Back up the database and rehearse against a restorable clone with the same MySQL version, table definitions, and collation before any production change.
@@ -131,3 +139,7 @@ The baseline version is a per-database decision based on inspected schema state;
 ## Local configuration
 
 Set the previously documented `DEVFLOW_DB_URL`, `DEVFLOW_DB_USERNAME`, `DEVFLOW_DB_PASSWORD`, and `DEVFLOW_JWT_SECRET` values in the process environment. For local development, activate only `SPRING_PROFILES_ACTIVE=dev` and set `DEVFLOW_DEV_DB_CONFIRMATION=LOCAL_DATABASE_ONLY`; the URL must point directly to a loopback MySQL host. For production, activate only `SPRING_PROFILES_ACTIVE=prod` and do not set the dev confirmation. Do not put actual credentials in this document, application properties, source control, terminal history, or screenshots. Maven tests use the checked-in H2 test properties and do not require or connect to MySQL.
+
+## Task due dates (V11)
+
+`V11__issue_due_dates.sql` adds a nullable `DATE` column named `issue.due_date`. It preserves existing tasks by leaving their due date unset. Production applies this change through the existing Flyway process; do not apply it manually or start the production application until the database's migration history and schema have been verified. H2 tests create the mapped column in their isolated in-memory schema and do not exercise the MySQL migration.

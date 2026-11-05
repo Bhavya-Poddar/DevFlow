@@ -1,6 +1,7 @@
 package com.devflow.devflow.entity;
 
 import jakarta.persistence.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Entity
@@ -13,6 +14,12 @@ public class Issue {
     private String acceptanceCriteria;
     private String priority;
     private String status;
+
+    @Column(name = "workflow_cycle", nullable = false)
+    private int workflowCycle = 1;
+
+    @Column(name = "due_date")
+    private LocalDate dueDate;
 
     @ManyToOne @JoinColumn(name = "project_id")
     private Project project;
@@ -69,6 +76,10 @@ public class Issue {
     public void setPriority(String priority) { this.priority = priority; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+    public int getWorkflowCycle() { return workflowCycle; }
+    public void setWorkflowCycle(int workflowCycle) { this.workflowCycle = workflowCycle; }
+    public LocalDate getDueDate() { return dueDate; }
+    public void setDueDate(LocalDate dueDate) { this.dueDate = dueDate; }
     public Project getProject() { return project; }
     public void setProject(Project project) { this.project = project; }
     public User getAssignedUser() { return assignedUser; }

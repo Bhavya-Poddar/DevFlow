@@ -1,10 +1,12 @@
+import { apiUrl } from "../services/apiConfig";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 function Login() {
 
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
+    const [showPassword, setShowPassword] = useState(false);
 
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
@@ -21,7 +23,7 @@ function Login() {
         try {
 
             const response = await fetch(
-                "http://localhost:8080/api/auth/login",
+                apiUrl("/api/auth/login"),
                 {
                     method: "POST",
 
@@ -69,161 +71,37 @@ function Login() {
     };
 
     return (
-        <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
-
-            <div className="w-full max-w-md">
-
-                {/* Logo */}
-
-                <div className="text-center mb-8">
-
-                    <h1 className="text-4xl font-bold text-white tracking-tight">
-                        Dev<span className="text-blue-500">Flow</span>
-                    </h1>
-
-                    <p className="text-gray-400 mt-2">
-                        Engineering workflow, simplified.
-                    </p>
-
-                </div>
-
-
-                {/* Login Card */}
-
-                <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 shadow-2xl">
-
-                    <div className="mb-6">
-
-                        <h2 className="text-2xl font-semibold text-white">
-                            Welcome back
-                        </h2>
-
-                        <p className="text-gray-400 text-sm mt-1">
-                            Sign in to your DevFlow account
-                        </p>
-
+        <main className="df-auth-root dfx-auth-stage">
+            <div className="dfx-auth-layout">
+                <aside className="dfx-auth-story">
+                    <Link className="dfx-brand" to="/login" aria-label="DevFlow home"><span className="dfx-brand-mark">D</span><span>Dev<span>Flow</span></span></Link>
+                    <div className="dfx-auth-story-copy">
+                        <p className="dfx-auth-kicker"><span /> ENGINEERING WORKSPACE</p>
+                        <h1>From first report<br />to <em>shipped.</em></h1>
+                        <p className="dfx-auth-description">Keep project work, task ownership, and testing progress moving in one focused place.</p>
+                        <div className="dfx-auth-flow" aria-label="DevFlow process">
+                            <div><span>01</span><strong>Plan</strong><small>Projects & sprints</small></div><i aria-hidden="true">→</i>
+                            <div><span>02</span><strong>Build</strong><small>Tasks & reviews</small></div><i aria-hidden="true">→</i>
+                            <div><span>03</span><strong>Verify</strong><small>Test outcomes</small></div>
+                        </div>
                     </div>
-
-
-                    {/* Error */}
-
-                    {error && (
-                        <div className="mb-5 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-                            {error}
-                        </div>
-                    )}
-
-
-                    {/* Form */}
-
-                    <form
-                        onSubmit={handleLogin}
-                        className="space-y-5"
-                    >
-
-                        {/* Email */}
-
-                        <div>
-
-                            <label className="block text-sm font-medium text-gray-300 mb-2">
-                                Email
-                            </label>
-
-                            <input
-                                type="email"
-                                value={email}
-                                onChange={(e) =>
-                                    setEmail(e.target.value)
-                                }
-                                placeholder="you@example.com"
-                                className="w-full px-4 py-3 bg-gray-800 border border-gray-700
-                                           rounded-lg text-white placeholder-gray-500
-                                           focus:outline-none focus:ring-2 focus:ring-blue-500
-                                           focus:border-transparent transition"
-                                required
-                            />
-
-                        </div>
-
-
-                        {/* Password */}
-
-                        <div>
-
-                            <label className="block text-sm font-medium text-gray-300 mb-2">
-                                Password
-                            </label>
-
-                            <input
-                                type="password"
-                                value={password}
-                                onChange={(e) =>
-                                    setPassword(e.target.value)
-                                }
-                                placeholder="Enter your password"
-                                className="w-full px-4 py-3 bg-gray-800 border border-gray-700
-                                           rounded-lg text-white placeholder-gray-500
-                                           focus:outline-none focus:ring-2 focus:ring-blue-500
-                                           focus:border-transparent transition"
-                                required
-                            />
-
-                        </div>
-
-
-                        {/* Login Button */}
-
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full py-3 bg-blue-600 hover:bg-blue-700
-                                       disabled:bg-blue-800 disabled:cursor-not-allowed
-                                       text-white font-semibold rounded-lg
-                                       transition duration-200"
-                        >
-
-                            {loading
-                                ? "Signing in..."
-                                : "Sign In"
-                            }
-
-                        </button>
-
+                    <p className="dfx-auth-footnote">A clearer path from engineering intent to verified delivery.</p>
+                </aside>
+                <section className="df-auth-card dfx-auth-form-panel" aria-labelledby="login-title">
+                    <div className="dfx-auth-form-heading"><p className="dfx-auth-kicker">WELCOME BACK</p><h2 id="login-title">Sign in to DevFlow</h2><p>Your workspace is ready when you are.</p></div>
+                    {error && <div role="alert" className="dfx-auth-error"><span aria-hidden="true">!</span><p>{error}</p></div>}
+                    <form onSubmit={handleLogin} className="dfx-auth-form">
+                        <label htmlFor="login-email">Email address</label>
+                        <input id="login-email" type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} placeholder="name@company.com" required />
+                        <div className="dfx-auth-label-row"><label htmlFor="login-password">Password</label><span>Use your DevFlow account password</span></div>
+                        <div className="dfx-password-field"><input id="login-password" type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Enter your password" required /><button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? "Hide" : "Show"}</button></div>
+                        <button type="submit" disabled={loading} className="dfx-auth-submit">{loading ? <><span className="dfx-button-spinner" />Signing in…</> : <>Continue to workspace <span aria-hidden="true">→</span></>}</button>
                     </form>
-
-
-                    {/* Register Link */}
-
-                    <div className="text-center mt-6">
-
-                        <p className="text-sm text-gray-400">
-
-                            Don't have an account?{" "}
-
-                            <button
-                                type="button"
-                                onClick={() => navigate("/register")}
-                                className="text-blue-400 hover:text-blue-300 font-medium"
-                            >
-                                Create one
-                            </button>
-
-                        </p>
-
-                    </div>
-
-                </div>
-
-
-                {/* Footer */}
-
-                <p className="text-center text-gray-600 text-xs mt-6">
-                    DevFlow • Engineering Management Platform
-                </p>
-
+                    <p className="dfx-auth-switch">New to DevFlow? <button type="button" onClick={() => navigate("/register")}>Create an account <span aria-hidden="true">↗</span></button></p>
+                    <div className="dfx-auth-form-footer"><span>DEVFLOW</span><span>Engineering Management Platform</span></div>
+                </section>
             </div>
-
-        </div>
+        </main>
     );
 }
 

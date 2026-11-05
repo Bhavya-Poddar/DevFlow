@@ -2,6 +2,7 @@ package com.devflow.devflow.dto;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.time.LocalDate;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -14,6 +15,7 @@ public class IssueUpdateRequestDTO {
     private String acceptanceCriteria;
     private String priority;
     private String status;
+    private LocalDate dueDate;
     private IdReferenceRequestDTO project;
     private IdReferenceRequestDTO assignedUser;
     private IdReferenceRequestDTO tester;
@@ -30,6 +32,8 @@ public class IssueUpdateRequestDTO {
     public void setPriority(String priority) { this.priority = priority; suppliedFields.add("priority"); }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; suppliedFields.add("status"); }
+    public LocalDate getDueDate() { return dueDate; }
+    public void setDueDate(LocalDate dueDate) { this.dueDate = dueDate; suppliedFields.add("dueDate"); }
     public IdReferenceRequestDTO getProject() { return project; }
     public void setProject(IdReferenceRequestDTO project) { this.project = project; suppliedFields.add("project"); }
     public IdReferenceRequestDTO getAssignedUser() { return assignedUser; }
@@ -44,6 +48,7 @@ public class IssueUpdateRequestDTO {
     @JsonIgnore public boolean hasAcceptanceCriteria() { return suppliedFields.contains("acceptanceCriteria"); }
     @JsonIgnore public boolean hasPriority() { return suppliedFields.contains("priority"); }
     @JsonIgnore public boolean hasStatus() { return suppliedFields.contains("status"); }
+    @JsonIgnore public boolean hasDueDate() { return suppliedFields.contains("dueDate"); }
     @JsonIgnore public boolean hasProject() { return suppliedFields.contains("project"); }
     @JsonIgnore public boolean hasAssignedUser() { return suppliedFields.contains("assignedUser"); }
     @JsonIgnore public boolean hasTester() { return suppliedFields.contains("tester"); }

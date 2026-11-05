@@ -7,6 +7,9 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.devflow.devflow.exception.ApiErrorWriter;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -18,6 +21,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     @Autowired
     private CurrentUserAuthenticationService currentUserAuthenticationService;
+
+    @Autowired
+    private ApiErrorWriter apiErrorWriter;
 
     @Override
     protected void doFilterInternal(
@@ -39,7 +45,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         Authentication authentication = currentUserAuthenticationService.authenticateToken(token);
         if (authentication == null) {
             org.springframework.security.core.context.SecurityContextHolder.clearContext();
-            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid or inactive bearer token");
+            apiErrorWriter.write(request, response, HttpStatus.UNAUTHORIZED,
+                    "UNAUTHORIZED", "Authentication is required or invalid.");
             return;
         }
 

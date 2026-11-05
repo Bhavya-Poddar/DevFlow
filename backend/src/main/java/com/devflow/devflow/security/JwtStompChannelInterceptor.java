@@ -13,9 +13,12 @@ import org.springframework.stereotype.Component;
 public class JwtStompChannelInterceptor implements ChannelInterceptor {
 
     private final CurrentUserAuthenticationService currentUserAuthenticationService;
+    private final JwtStompSessionLifecycle sessionLifecycle;
 
-    public JwtStompChannelInterceptor(CurrentUserAuthenticationService currentUserAuthenticationService) {
+    public JwtStompChannelInterceptor(CurrentUserAuthenticationService currentUserAuthenticationService,
+            JwtStompSessionLifecycle sessionLifecycle) {
         this.currentUserAuthenticationService = currentUserAuthenticationService;
+        this.sessionLifecycle = sessionLifecycle;
     }
 
     @Override
@@ -28,33 +31,38 @@ public class JwtStompChannelInterceptor implements ChannelInterceptor {
         if (StompCommand.CONNECT.equals(accessor.getCommand())) {
             String authorization = accessor.getFirstNativeHeader("Authorization");
             if (authorization == null || !authorization.startsWith("Bearer ")) {
+                sessionLifecycle.rejectConnection(accessor.getSessionId());
                 return null;
             }
 
             String token = authorization.substring(7);
             Authentication authentication = currentUserAuthenticationService.authenticateToken(token);
-            if (authentication == null) return null;
+            if (authentication == null) {
+                sessionLifecycle.rejectConnection(accessor.getSessionId());
+                return null;
+            }
+            if (!sessionLifecycle.registerAuthenticatedSession(accessor.getSessionId(), token)) {
+                sessionLifecycle.rejectConnection(accessor.getSessionId());
+                return null;
+            }
             accessor.setUser(authentication);
             return message;
         }
 
         if (StompCommand.DISCONNECT.equals(accessor.getCommand())) {
+            sessionLifecycle.disconnect(accessor.getSessionId());
             return message;
         }
 
-        if (accessor.getUser() == null) {
-            return null;
-        }
-
-        Authentication currentAuthentication = currentUserAuthenticationService
-            .authenticateEmail(accessor.getUser().getName());
+        Authentication currentAuthentication = sessionLifecycle.authenticateSession(accessor.getSessionId());
         if (currentAuthentication == null) return null;
         accessor.setUser(currentAuthentication);
 
         if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
             String destination = accessor.getDestination();
-            if (destination != null && destination.startsWith("/user/")
-                    && !"/user/queue/notifications".equals(destination)) {
+            // Notifications are the only current subscription destination. There are no
+            // topic publishers or resource-level topic authorization rules yet.
+            if (!"/user/queue/notifications".equals(destination)) {
                 return null;
             }
         }

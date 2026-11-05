@@ -1,6 +1,7 @@
 package com.devflow.devflow.security;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Date;
 
 import javax.crypto.SecretKey;
@@ -56,6 +57,13 @@ public class JwtService {
     public String extractRole(String token) {
 
         return getClaims(token).get("role", String.class);
+    }
+
+    /** Returns the verified expiration claim; malformed or expired tokens throw during parsing. */
+    public Instant extractExpiration(String token) {
+        Date expiration = getClaims(token).getExpiration();
+        if (expiration == null) throw new IllegalArgumentException("JWT expiration is required");
+        return expiration.toInstant();
     }
 
     private Claims getClaims(String token) {

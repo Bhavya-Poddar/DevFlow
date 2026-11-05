@@ -17,6 +17,7 @@ import com.devflow.devflow.dto.RegistrationRequestDTO;
 import com.devflow.devflow.repository.UserRepository;
 import com.devflow.devflow.security.JwtService;
 import com.devflow.devflow.service.AuthService;
+import com.devflow.devflow.service.AuditLogServices;
 
 @ExtendWith(MockitoExtension.class)
 class PublicRegistrationRoleTests {
@@ -24,6 +25,7 @@ class PublicRegistrationRoleTests {
     @Mock private UserRepository userRepository;
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private JwtService jwtService;
+    @Mock private AuditLogServices auditLogService;
 
     @InjectMocks private AuthService authService;
 

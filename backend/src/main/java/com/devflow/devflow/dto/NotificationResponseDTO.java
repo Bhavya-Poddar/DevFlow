@@ -10,6 +10,7 @@ public class NotificationResponseDTO {
     private boolean read;
     private LocalDateTime createdAt;
     private String recipientAvatarUrl;
+    private String targetPath;
 
     public NotificationResponseDTO(Long id, String message, String type, boolean read, LocalDateTime createdAt) {
         this(id, message, type, read, createdAt, null);
@@ -17,12 +18,18 @@ public class NotificationResponseDTO {
 
     public NotificationResponseDTO(Long id, String message, String type, boolean read, LocalDateTime createdAt,
             String recipientAvatarUrl) {
+        this(id, message, type, read, createdAt, recipientAvatarUrl, null);
+    }
+
+    public NotificationResponseDTO(Long id, String message, String type, boolean read, LocalDateTime createdAt,
+            String recipientAvatarUrl, String targetPath) {
         this.id = id;
         this.message = message;
         this.type = type;
         this.read = read;
         this.createdAt = createdAt;
         this.recipientAvatarUrl = recipientAvatarUrl;
+        this.targetPath = targetPath;
     }
 
     public Long getId() { return id; }
@@ -31,4 +38,5 @@ public class NotificationResponseDTO {
     public boolean isRead() { return read; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public String getRecipientAvatarUrl() { return recipientAvatarUrl; }
+    public String getTargetPath() { return targetPath; }
 }

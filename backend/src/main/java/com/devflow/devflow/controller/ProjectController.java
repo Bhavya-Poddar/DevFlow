@@ -14,27 +14,39 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.core.Authentication;
 
 import com.devflow.devflow.entity.Project;
 import com.devflow.devflow.dto.ProjectCreateRequestDTO;
 import com.devflow.devflow.dto.ProjectUpdateRequestDTO;
 import com.devflow.devflow.service.ProjectService;
+import com.devflow.devflow.service.ProjectAssignableMemberService;
+import com.devflow.devflow.dto.ProjectAssignableMemberDTO;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 
 @RestController
 @RequestMapping("/api/projects")
+@Tag(name = "Projects", description = "Project lifecycle and metadata operations.")
+@SecurityRequirement(name = "bearerAuth")
 public class ProjectController {
 
     @Autowired
     private ProjectService projectService;
+    @Autowired private ProjectAssignableMemberService assignableMemberService;
 
 
     // CREATE PROJECT
     @PostMapping
+    @Operation(summary = "Create a project", description = "Creates a project from the supplied project fields.")
+    @ApiResponse(responseCode = "201", description = "Project created.")
     public ResponseEntity<Project> createProject(
-            @RequestBody ProjectCreateRequestDTO project) {
+            @RequestBody ProjectCreateRequestDTO project, Authentication authentication) {
 
         Project createdProject =
-                projectService.createProject(project);
+                projectService.createProject(project, authentication.getName());
 
         return new ResponseEntity<>(
                 createdProject,
@@ -45,22 +57,29 @@ public class ProjectController {
 
     // GET ALL PROJECTS
     @GetMapping
-    public ResponseEntity<List<Project>> getAllProjects() {
+    @Operation(summary = "List projects", description = "Returns the projects visible through the authenticated API.")
+    public ResponseEntity<List<Project>> getAllProjects(Authentication authentication) {
 
         List<Project> projects =
-                projectService.getAllProjects();
+                projectService.getAllProjects(authentication.getName());
 
         return ResponseEntity.ok(projects);
+    }
+
+    @GetMapping("/{id}/assignable-members")
+    public ResponseEntity<List<ProjectAssignableMemberDTO>> getAssignableMembers(@PathVariable Long id,Authentication authentication){
+        return ResponseEntity.ok(assignableMemberService.list(id,authentication.getName()));
     }
 
 
     // GET PROJECT BY ID
     @GetMapping("/{id}")
+    @Operation(summary = "Get a project", description = "Returns a project by ID or 404 if it does not exist.")
     public ResponseEntity<Project> getProjectById(
-            @PathVariable Long id) {
+            @PathVariable Long id, Authentication authentication) {
 
         Optional<Project> project =
-                projectService.getProjectById(id);
+                projectService.getProjectById(id, authentication.getName());
 
         if (project.isPresent()) {
 
@@ -77,14 +96,16 @@ public class ProjectController {
 
     // UPDATE PROJECT
     @PutMapping("/{id}")
+    @Operation(summary = "Update a project", description = "Updates allowed project metadata for an authorized project manager or administrator.")
     public ResponseEntity<Project> updateProject(
             @PathVariable Long id,
-            @RequestBody ProjectUpdateRequestDTO updatedProject) {
+            @RequestBody ProjectUpdateRequestDTO updatedProject, Authentication authentication) {
 
         Project project =
                 projectService.updateProject(
                         id,
-                        updatedProject
+                        updatedProject,
+                        authentication.getName()
                 );
 
         return ResponseEntity.ok(project);
@@ -93,10 +114,11 @@ public class ProjectController {
 
     // DELETE PROJECT
     @DeleteMapping("/{id}")
+    @Operation(summary = "Delete a project", description = "Deletes a project when existing relationship and authorization rules allow it.")
     public ResponseEntity<String> deleteProject(
-            @PathVariable Long id) {
+            @PathVariable Long id, Authentication authentication) {
 
-        projectService.deleteProject(id);
+        projectService.deleteProject(id, authentication.getName());
 
         return ResponseEntity.ok(
                 "Project deleted successfully"

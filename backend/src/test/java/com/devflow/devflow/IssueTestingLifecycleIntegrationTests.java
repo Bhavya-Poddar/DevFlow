@@ -154,7 +154,7 @@ class IssueTestingLifecycleIntegrationTests {
             .andExpect(jsonPath("$.expectedResult").value("Dashboard opens"))
             .andExpect(jsonPath("$.actualResult").value("Dashboard opened"));
 
-        assertEquals("RESOLVED", issueRepository.findById(issue.getId()).orElseThrow().getStatus());
+        assertEquals("TEAM_LEAD_APPROVAL", issueRepository.findById(issue.getId()).orElseThrow().getStatus());
         var history = executionRepository.findByIssueIdOrderByCreatedAtDesc(issue.getId());
         assertEquals(1, history.size());
         assertEquals("COMPLETED", history.get(0).getStatus());
@@ -181,7 +181,7 @@ class IssueTestingLifecycleIntegrationTests {
             .andExpect(jsonPath("$.tester.id").value(admin.getId()))
             .andExpect(jsonPath("$.testScenario").value("Admin verification"));
 
-        assertEquals("RESOLVED", issueRepository.findById(issue.getId()).orElseThrow().getStatus());
+        assertEquals("TEAM_LEAD_APPROVAL", issueRepository.findById(issue.getId()).orElseThrow().getStatus());
         assertEquals(admin.getId(), executionRepository.findByIssueIdOrderByCreatedAtDesc(issue.getId())
             .get(0).getTester().getId());
     }
@@ -207,6 +207,43 @@ class IssueTestingLifecycleIntegrationTests {
                 .get("/api/issues/{id}", issueId).header("Authorization", bearer(admin)))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.acceptanceCriteria").value("Invalid credentials show an error."));
+    }
+
+    @Test
+    void dueDateCanBeCreatedReadUpdatedAndExplicitlyClearedWithoutChangingOnOmission() throws Exception {
+        User admin = user("ADMIN");
+        String created = mockMvc.perform(post("/api/issues").header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"title\":\"Deadline task\",\"dueDate\":\"2026-11-15\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.dueDate").value("2026-11-15"))
+            .andReturn().getResponse().getContentAsString();
+        Long issueId = new com.fasterxml.jackson.databind.ObjectMapper().readTree(created).get("id").asLong();
+
+        mockMvc.perform(put("/api/issues/{id}", issueId).header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"description\":\"Change details only\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.description").value("Change details only"))
+            .andExpect(jsonPath("$.dueDate").value("2026-11-15"));
+
+        mockMvc.perform(put("/api/issues/{id}", issueId).header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"dueDate\":\"2026-11-20\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.dueDate").value("2026-11-20"));
+
+        mockMvc.perform(put("/api/issues/{id}", issueId).header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"dueDate\":null}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.dueDate").doesNotExist());
+    }
+
+    @Test
+    void malformedDueDateIsRejected() throws Exception {
+        User admin = user("ADMIN");
+        mockMvc.perform(post("/api/issues").header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"title\":\"Invalid date task\",\"dueDate\":\"not-a-date\"}"))
+            .andExpect(status().isBadRequest());
     }
 
     @Test

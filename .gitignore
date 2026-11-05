@@ -33,3 +33,4 @@ Thumbs.db
 *.dump
 *.db
 recovery-snapshot-*/
+!backend/src/main/resources/application-prod.properties

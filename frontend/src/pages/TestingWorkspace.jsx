@@ -1,8 +1,10 @@
+import { apiUrl } from "../services/apiConfig";
+import { loadDropdownOptions, dropdownLabel } from "../services/dropdownOptions";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { responseErrorMessage } from "../utils/responseError";
 
-const API = "http://localhost:8080/api";
+const API = apiUrl("/api");
 const date = (value) => value ? new Date(value).toLocaleString() : "Not recorded";
 const canSubmit = (user, issue) => user?.role === "ADMIN"
     || (user?.role === "TESTER" && String(issue?.tester?.id) === String(user.id));
@@ -15,6 +17,9 @@ export default function TestingWorkspace() {
     const [history, setHistory] = useState([]);
     const [user, setUser] = useState(null);
     const [testForm, setTestForm] = useState({ testScenario: "", expectedResult: "", actualResult: "", notes: "" });
+    const [resultOptions, setResultOptions] = useState([{code:"PASSED",displayLabel:"Passed"},{code:"FAILED",displayLabel:"Failed"}]);
+
+    useEffect(() => { loadDropdownOptions("TEST_RESULT").then(data=>{if(data.length)setResultOptions(data);}).catch(()=>{}); }, []);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
@@ -26,7 +31,7 @@ export default function TestingWorkspace() {
             fetch(`${API}/testing/issue/${encodeURIComponent(issueId)}/history`, { headers }),
             fetch(`${API}/users/me`, { headers }),
         ]);
-        if (!issueResponse.ok) throw new Error(await responseErrorMessage(issueResponse, "Could not load issue details."));
+        if (!issueResponse.ok) throw new Error(await responseErrorMessage(issueResponse, "Could not load task details."));
         if (!historyResponse.ok) throw new Error(await responseErrorMessage(historyResponse, "Could not load testing history."));
         if (!userResponse.ok) throw new Error(await responseErrorMessage(userResponse, "Could not load your account."));
         const [issueData, historyData, userData] = await Promise.all([
@@ -86,8 +91,8 @@ export default function TestingWorkspace() {
             setTestForm({ testScenario: "", expectedResult: "", actualResult: "", notes: "" });
             await load();
             setNotice(result === "FAILED"
-                ? "Test failed. The issue returned to the developer workflow."
-                : "Test passed. The issue was resolved.");
+                ? "Test failed. The task returned to the developer workflow."
+                : "Test passed. The task was resolved.");
         } catch (requestError) {
             setError(requestError.message);
         } finally {
@@ -102,20 +107,20 @@ export default function TestingWorkspace() {
     if (loading) return <main className="text-gray-400">Loading testing workspace…</main>;
 
     return (
-        <main className="mx-auto max-w-5xl space-y-6">
+        <main className="dfx-screen dfx-screen--testing-workspace mx-auto max-w-5xl space-y-6">
             <Link to={user?.role === "TESTER" ? "/my-tests" : "/testing"} className="text-sm text-blue-400 hover:text-blue-300">
                 ← Back to testing
             </Link>
             {error && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-red-300">{error}</p>}
             {notice && <p role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-300">{notice}</p>}
             {!issue ? (
-                <div className="rounded-xl border border-gray-800 bg-gray-900 p-8 text-gray-400">Issue not found or unavailable to your account.</div>
+                <div className="rounded-xl border border-gray-800 bg-gray-900 p-8 text-gray-400">Task not found or unavailable to your account.</div>
             ) : (
                 <>
-                    <header className="rounded-xl border border-gray-800 bg-gray-900 p-6">
+                    <header className="dfx-test-task-header rounded-xl border border-gray-800 bg-gray-900 p-6">
                         <div className="flex flex-wrap justify-between gap-3">
                             <div>
-                                <p className="text-sm text-blue-400">ISSUE #{issue.id}</p>
+                                <p className="text-sm text-blue-400">TASK #{issue.id}</p>
                                 <h1 className="mt-2 text-2xl font-bold text-white">{issue.title}</h1>
                             </div>
                             <span className="h-fit rounded-full bg-yellow-500/10 px-3 py-1 text-sm text-yellow-300">{String(issue.status || "Unknown").replaceAll("_", " ")}</span>
@@ -123,7 +128,7 @@ export default function TestingWorkspace() {
                         <p className="mt-4 whitespace-pre-wrap text-gray-300">{issue.description || "No description."}</p>
                         <div className="mt-6 rounded-lg border border-gray-800 bg-gray-950 p-4">
                             <h2 className="text-sm font-semibold text-gray-200">Acceptance criteria</h2>
-                            <p className="mt-2 whitespace-pre-wrap text-sm text-gray-300">{issue.acceptanceCriteria || "No acceptance criteria have been recorded for this issue."}</p>
+                            <p className="mt-2 whitespace-pre-wrap text-sm text-gray-300">{issue.acceptanceCriteria || "No acceptance criteria have been recorded for this task."}</p>
                         </div>
                         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                             {[["Project", issue.project?.name], ["Developer", issue.assignedUser?.name], ["Tester", issue.tester?.name], ["Sprint", issue.sprint?.name], ["Priority", issue.priority]].map(([label, value]) => (
@@ -131,21 +136,23 @@ export default function TestingWorkspace() {
                             ))}
                         </div>
                     </header>
+                    <div className="dfx-test-layout">
+                    <div className="dfx-test-actions">
 
                     {issue.status === "READY_FOR_TESTING" && user?.role === "TESTER" && String(issue.tester?.id) !== String(user.id) && (
                         <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-5 text-sm text-amber-200">
-                            This issue is assigned to {issue.tester?.name || "another tester"}. Only its assigned tester can start testing.
+                            This task is assigned to {issue.tester?.name || "another tester"}. Only its assigned tester can start testing.
                         </section>
                     )}
                     {issue.status === "READY_FOR_TESTING" && canSubmit(user, issue) && (
-                        <section className="rounded-xl border border-gray-800 bg-gray-900 p-6">
+                    <section className="rounded-xl border border-gray-800 bg-gray-900 p-6">
                             <h2 className="text-lg font-semibold text-white">Ready to test</h2>
                             <p className="mt-1 text-sm text-gray-400">Review the acceptance criteria, then start a test execution. You can submit a Pass or Fail result once testing is active.</p>
                             <button disabled={busy} onClick={start} className="mt-4 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-500 disabled:opacity-50">{busy ? "Starting…" : "Start Testing"}</button>
                         </section>
                     )}
                     {issue.status === "TESTING" && canSubmit(user, issue) && (
-                        <section className="rounded-xl border border-gray-800 bg-gray-900 p-6">
+                    <section className="rounded-xl border border-gray-800 bg-gray-900 p-6">
                             <h2 className="text-lg font-semibold text-white">Record test results</h2>
                             <p className="mt-1 text-sm text-gray-400">Capture the scenario and compare expected and actual behavior. Failure notes are required.</p>
                             <div className="mt-4 grid gap-4">
@@ -155,22 +162,23 @@ export default function TestingWorkspace() {
                                 <label className="text-sm text-gray-300">Notes<textarea name="notes" value={testForm.notes} onChange={updateTestField} rows="3" className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-950 p-3 text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none" placeholder="Additional context; required for a failed test." /></label>
                             </div>
                             <div className="mt-4 flex flex-wrap gap-3">
-                                <button disabled={busy} onClick={() => complete("PASSED")} className="rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-500 disabled:opacity-50">{busy ? "Saving…" : "Pass Test"}</button>
-                                <button disabled={busy} onClick={() => complete("FAILED")} className="rounded-lg bg-red-600 px-4 py-2 font-medium text-white hover:bg-red-500 disabled:opacity-50">{busy ? "Saving…" : "Fail Test"}</button>
+                                <button disabled={busy} onClick={() => complete("PASSED")} className="rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-500 disabled:opacity-50">{busy ? "Saving…" : `${dropdownLabel(resultOptions,"PASSED","Passed")} Test`}</button>
+                                <button disabled={busy} onClick={() => complete("FAILED")} className="rounded-lg bg-red-600 px-4 py-2 font-medium text-white hover:bg-red-500 disabled:opacity-50">{busy ? "Saving…" : `${dropdownLabel(resultOptions,"FAILED","Failed")} Test`}</button>
                             </div>
                         </section>
                     )}
                     {issue.status === "TESTING" && !canSubmit(user, issue) && (
                         <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-5 text-sm text-amber-200">Testing is in progress. Results can be submitted by the assigned tester or an administrator.</section>
                     )}
-                    <section className="rounded-xl border border-gray-800 bg-gray-900 p-6">
+                    </div>
+                    <section className="dfx-test-history rounded-xl border border-gray-800 bg-gray-900 p-6">
                         <h2 className="text-lg font-semibold text-white">Testing history</h2>
                         {history.length === 0 ? <p className="mt-4 text-sm text-gray-500">No previous test attempts.</p> : (
                             <ol className="mt-5 space-y-4 border-l border-gray-700 pl-5">
                                 {history.map((entry, index) => (
                                     <li key={entry.id || index} className="relative rounded-lg border border-gray-800 bg-gray-950 p-4">
                                         <span className="absolute -left-[1.62rem] top-5 h-2.5 w-2.5 rounded-full bg-blue-500" />
-                                        <div className="flex flex-wrap justify-between gap-2"><h3 className="font-medium text-white">Test #{history.length - index}</h3><span className={`text-sm font-semibold ${entry.result === "PASSED" ? "text-emerald-400" : entry.result === "FAILED" ? "text-red-400" : "text-yellow-300"}`}>{entry.result || entry.status || "IN PROGRESS"}</span></div>
+                                        <div className="flex flex-wrap justify-between gap-2"><h3 className="font-medium text-white">Test #{history.length - index}</h3><span className={`text-sm font-semibold ${entry.result === "PASSED" ? "text-emerald-400" : entry.result === "FAILED" ? "text-red-400" : "text-yellow-300"}`}>{entry.result ? dropdownLabel(resultOptions,entry.result,entry.result) : entry.status || "IN PROGRESS"}</span></div>
                                         <p className="mt-2 text-sm text-gray-400">Tester / actor: {entry.tester?.name || "—"}</p>
                                         <p className="mt-1 text-xs text-gray-500">Started: {date(entry.startedAt)} · Completed: {date(entry.completedAt)}</p>
                                         {entry.testScenario && <p className="mt-3 whitespace-pre-wrap text-sm text-gray-300"><strong>Scenario:</strong> {entry.testScenario}</p>}
@@ -182,6 +190,7 @@ export default function TestingWorkspace() {
                             </ol>
                         )}
                     </section>
+                    </div>
                 </>
             )}
         </main>

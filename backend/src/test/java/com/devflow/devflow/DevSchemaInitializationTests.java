@@ -23,9 +23,9 @@ class DevSchemaInitializationTests {
         Integer tableCount = jdbcTemplate.queryForObject(
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
                 + "WHERE TABLE_SCHEMA = 'PUBLIC' AND TABLE_NAME IN "
-                + "('USER', 'PROJECT', 'SPRINT', 'ISSUE', 'COMMENT', 'AUDIT_LOG', 'TEST_EXECUTION', 'NOTIFICATION')",
+                + "('USER', 'PROJECT', 'SPRINT', 'ISSUE', 'COMMENT', 'AUDIT_LOG', 'TEST_EXECUTION', 'NOTIFICATION', 'ISSUE_DEPENDENCY')",
             Integer.class);
 
-        assertEquals(8, tableCount);
+        assertEquals(9, tableCount);
     }
 }

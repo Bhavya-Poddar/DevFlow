@@ -65,8 +65,10 @@ class ProjectReportServiceTests {
 
         assertEquals("DevFlow", report.getProjectName());
         assertEquals(1, report.getIssues().size());
-        assertEquals("dev@example.com", report.getIssues().get(0).getDeveloper().getEmail());
-        assertEquals("tester@example.com", report.getIssues().get(0).getTester().getEmail());
+        assertEquals("dev@example.com", report.getIssues().get(0).getDeveloper().name());
+        assertEquals("DEVELOPER", report.getIssues().get(0).getDeveloper().role());
+        assertEquals("tester@example.com", report.getIssues().get(0).getTester().name());
+        assertEquals("TESTER", report.getIssues().get(0).getTester().role());
         assertEquals("FAILED", report.getIssues().get(0).getTestResult());
         assertEquals("Special characters fail", report.getIssues().get(0).getTestNotes());
         assertEquals(1, report.getSummary().getTotalIssues());

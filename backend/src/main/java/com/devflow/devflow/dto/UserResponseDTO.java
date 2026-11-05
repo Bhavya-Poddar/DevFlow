@@ -9,6 +9,7 @@ public class UserResponseDTO {
     private String email;
     private String role;
     private String avatarUrl;
+    private boolean enabled;
 
     public UserResponseDTO() {
     }
@@ -24,11 +25,17 @@ public class UserResponseDTO {
 
     public UserResponseDTO(Long id, String name, String email, String role, String avatarUrl) {
 
+        this(id, name, email, role, avatarUrl, true);
+    }
+
+    public UserResponseDTO(Long id, String name, String email, String role, String avatarUrl, boolean enabled) {
+
         this.id = id;
         this.name = name;
         this.email = email;
         this.role = role;
         this.avatarUrl = avatarUrl;
+        this.enabled = enabled;
     }
 
     public Long getId() {
@@ -65,5 +72,7 @@ public class UserResponseDTO {
 
     public String getAvatarUrl() { return avatarUrl; }
     public void setAvatarUrl(String avatarUrl) { this.avatarUrl = avatarUrl; }
+    public boolean isEnabled() { return enabled; }
+    public void setEnabled(boolean enabled) { this.enabled = enabled; }
     
 }

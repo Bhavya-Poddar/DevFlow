@@ -347,6 +347,7 @@ class UpdateEndpointSecurityTests {
         user.setEmail(email);
         user.setName(email);
         user.setRole(role);
+        if ("ADMIN".equals(role)) user.setAdminRecovery(true);
         user.setPassword(passwordEncoder.encode("test-password"));
         return userRepository.saveAndFlush(user);
     }

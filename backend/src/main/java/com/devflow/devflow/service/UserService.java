@@ -1,10 +1,8 @@
 package com.devflow.devflow.service;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 
 import org.springframework.web.multipart.MultipartFile;
 
@@ -15,28 +13,42 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.core.Authentication;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.devflow.devflow.dto.UserCreateRequestDTO;
 import com.devflow.devflow.dto.UserUpdateRequestDTO;
 import com.devflow.devflow.dto.ProfileUpdateRequestDTO;
 import com.devflow.devflow.dto.PasswordChangeRequestDTO;
 import com.devflow.devflow.entity.User;
+import com.devflow.devflow.entity.AuthorizationRole;
+import com.devflow.devflow.entity.PermissionScope;
+import com.devflow.devflow.repository.AuthorizationRoleRepository;
 import com.devflow.devflow.repository.UserRepository;
 import com.devflow.devflow.util.EmailAddress;
 
 @Service
 public class UserService {
 
-    private static final Set<String> ALLOWED_ROLES = Set.of(
-            "ADMIN",
-            "PROJECT_MANAGER",
-            "DEVELOPER",
-            "VIEWER",
-            "TESTER"
-    );
-
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private AuthorizationRoleRepository authorizationRoleRepository;
+
+    @Autowired
+    private RoleManagementService roleManagementService;
+
+    @Autowired
+    private EffectivePermissionService effectivePermissionService;
+
+    @Autowired
+    private AdminRecoveryGuard adminRecoveryGuard;
+
+    @Autowired
+    private AdminRecoveryCapability adminRecoveryCapability;
+
+    @Autowired
+    private ProjectTeamProvisioningService projectTeamProvisioningService;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -48,10 +60,26 @@ public class UserService {
     private ProfilePictureStorageService profilePictureStorageService;
 
     public User createUser(UserCreateRequestDTO userRequest) {
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+            "An authenticated user-management actor is required to create accounts");
+    }
+
+    @Transactional
+    public User createUser(UserCreateRequestDTO userRequest, String actorEmail) {
+
+        if (actorEmail == null || actorEmail.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "An authenticated user-management actor is required to create accounts");
+        }
+        adminRecoveryGuard.lockInvariant();
+        effectivePermissionService.require(actorEmail, "USER_MANAGE", null, null);
+        // Account creation necessarily assigns an initial global role. Keep that privilege
+        // behind the separate recovery capability just like later global-role changes.
+        effectivePermissionService.require(actorEmail, "ROLE_MANAGE", null, null);
 
         String email = EmailAddress.normalize(userRequest.getEmail());
         if (email == null || email.isBlank()) {
-            throw new RuntimeException("Email is required");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email is required");
         }
 
         if (userRepository.existsByEmailIgnoreCase(email)) {
@@ -59,16 +87,17 @@ public class UserService {
         }
 
         if (userRequest.getPassword() == null || userRequest.getPassword().isBlank()) {
-            throw new RuntimeException("Password is required");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Password is required");
         }
 
         String requestedRole = userRequest.getRole();
-        String role = requestedRole == null
-                ? ""
-                : requestedRole.trim().toUpperCase(Locale.ROOT);
-        if (!ALLOWED_ROLES.contains(role)) {
-            throw new RuntimeException("Role must be ADMIN, PROJECT_MANAGER, DEVELOPER, TESTER, or VIEWER");
+        String roleCode = requestedRole == null ? "" : requestedRole.trim().toUpperCase(java.util.Locale.ROOT);
+        AuthorizationRole configuredRole = authorizationRoleRepository.findByCodeAndRetiredFalse(roleCode)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Role is unavailable"));
+        if (configuredRole.getScope() != PermissionScope.GLOBAL) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Initial account role must have GLOBAL scope");
         }
+        String role = configuredRole.getCode();
 
         User user = new User();
         user.setName(userRequest.getName());
@@ -76,11 +105,16 @@ public class UserService {
         user.setPassword(passwordEncoder.encode(userRequest.getPassword()));
         user.setRole(role);
 
+        User created;
         try {
-            return userRepository.saveAndFlush(user);
+            created = userRepository.saveAndFlush(user);
         } catch (DataIntegrityViolationException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email is already registered");
         }
+        Long actorId = auditLogService.findActorId(actorEmail);
+        auditLogService.createLog("USER_CREATED", "targetType=USER; targetId=" + created.getId()
+                + "; administrator created account with role " + role, null, actorId);
+        return created;
     }
 
     public List<User> getAllUsers() {
@@ -88,7 +122,12 @@ public class UserService {
     }
 
     public List<User> getTesters() {
-        return userRepository.findByRole("TESTER");
+        List<String> roleCodes = authorizationRoleRepository.findAll().stream()
+            .filter(role -> role.getScope() == PermissionScope.GLOBAL)
+            .filter(role -> role.getPermissions().stream().anyMatch(permission ->
+                "ASSIGNABLE_TESTER".equals(permission.getKey())))
+            .map(AuthorizationRole::getCode).toList();
+        return roleCodes.isEmpty() ? List.of() : userRepository.findByRoleInAndEnabledTrue(roleCodes);
     }
 
     public Optional<User> getUserById(Long id) {
@@ -99,8 +138,11 @@ public class UserService {
         return userRepository.findByEmailIgnoreCase(email);
     }
 
+    @Transactional
     public User updateCurrentProfile(String authenticatedEmail, ProfileUpdateRequestDTO request) {
+        adminRecoveryGuard.lockInvariant();
         User currentUser = currentUser(authenticatedEmail);
+        boolean recoveryAccount = adminRecoveryCapability.hasCapability(currentUser);
         if (request.getName() == null || request.getName().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Display name cannot be blank");
         }
@@ -111,15 +153,30 @@ public class UserService {
         if (!email.equals(currentUser.getEmail()) && userRepository.existsByEmailIgnoreCase(email)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email is already registered");
         }
+        boolean nameChanged = !Objects.equals(currentUser.getName(), request.getName().trim());
+        boolean emailChanged = !Objects.equals(currentUser.getEmail(), email);
         currentUser.setName(request.getName().trim());
         currentUser.setEmail(email);
+        User saved;
         try {
-            return userRepository.saveAndFlush(currentUser);
+            saved = userRepository.saveAndFlush(currentUser);
         } catch (DataIntegrityViolationException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email is already registered");
         }
+        if (recoveryAccount && !adminRecoveryCapability.hasCapability(saved)) {
+            adminRecoveryGuard.requireRecoveryAccount();
+        }
+        if (nameChanged || emailChanged) {
+            List<String> fields = new java.util.ArrayList<>();
+            if (nameChanged) fields.add("name");
+            if (emailChanged) fields.add("email");
+            auditLogService.createLog("PROFILE_UPDATED", "targetType=USER; targetId=" + saved.getId()
+                    + "; updatedFields=" + String.join(",", fields), null, saved.getId());
+        }
+        return saved;
     }
 
+    @Transactional
     public void changeCurrentPassword(String authenticatedEmail, PasswordChangeRequestDTO request) {
         User currentUser = currentUser(authenticatedEmail);
         if (request.getCurrentPassword() == null
@@ -135,6 +192,8 @@ public class UserService {
         }
         currentUser.setPassword(passwordEncoder.encode(request.getNewPassword()));
         userRepository.save(currentUser);
+        auditLogService.createLog("PASSWORD_CHANGED", "targetType=USER; targetId=" + currentUser.getId()
+                + "; password changed", null, currentUser.getId());
     }
 
     public User updateCurrentAvatar(String authenticatedEmail, MultipartFile image) {
@@ -169,51 +228,43 @@ public class UserService {
 
     public record ResourceWithType(org.springframework.core.io.Resource resource, String contentType) {}
 
+    @Transactional
     public User updateUserRole(Long userId, String requestedRole, String actorEmail) {
-        String role = normalizeRole(requestedRole);
-        if (!ALLOWED_ROLES.contains(role)) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "Role must be ADMIN, PROJECT_MANAGER, DEVELOPER, TESTER, or VIEWER");
+        String roleCode = requestedRole == null ? "" : requestedRole.trim().toUpperCase(java.util.Locale.ROOT);
+        AuthorizationRole role = authorizationRoleRepository.findByCodeAndRetiredFalse(roleCode)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "Role is unavailable"));
+        if (role.getScope() != PermissionScope.GLOBAL) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Global role assignment requires a GLOBAL role");
         }
+        roleManagementService.assignGlobalRole(userId, role.getId(), actorEmail);
+        return userRepository.findById(userId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+    }
 
+    @Transactional
+    public User updateUser(Long id, UserUpdateRequestDTO updatedUser, String actorEmail) {
+        // Serialize account disablement with recovery-capability changes before reading the target.
+        if (updatedUser != null && updatedUser.hasEnabled() && Boolean.FALSE.equals(updatedUser.getEnabled())) {
+            adminRecoveryGuard.lockInvariant();
+        }
+        effectivePermissionService.require(actorEmail, "USER_MANAGE", null, null);
+
+        // Resolve the actor before editing any account fields. An administrator
+        // may update their own email, so a later lookup by the old email would fail.
         User actor = userRepository.findByEmailIgnoreCase(actorEmail)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Admin user not found"));
-        User target = userRepository.findById(userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
-
-        if (Objects.equals(actor.getId(), target.getId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admins cannot change their own role");
-        }
-
-        String oldRole = target.getRole();
-        if (!Objects.equals(oldRole, role)) {
-            target.setRole(role);
-            target = userRepository.save(target);
-
-            auditLogService.createLog(
-                    "ROLE_CHANGED",
-                    "User '" + target.getName() + "' role changed from '" + oldRole + "' to '" + role + "'",
-                    null,
-                    actor.getId());
-        }
-
-        return target;
-    }
-
-    private String normalizeRole(String role) {
-        return role == null ? "" : role.trim().toUpperCase(Locale.ROOT);
-    }
-
-    public User updateUser(Long id, UserUpdateRequestDTO updatedUser, String actorEmail) {
 
         User existingUser = userRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+
+        List<String> changedFields = new java.util.ArrayList<>();
+        boolean wasRecoveryCapability = adminRecoveryCapability.hasCapability(existingUser);
 
         if (updatedUser.hasName()) {
             if (updatedUser.getName() == null || updatedUser.getName().isBlank()) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Name cannot be blank");
             }
+            if (!Objects.equals(existingUser.getName(), updatedUser.getName())) changedFields.add("name");
             existingUser.setName(updatedUser.getName());
         }
 
@@ -225,6 +276,7 @@ public class UserService {
             if (!email.equals(existingUser.getEmail()) && userRepository.existsByEmailIgnoreCase(email)) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "Email is already registered");
             }
+            if (!Objects.equals(existingUser.getEmail(), email)) changedFields.add("email");
             existingUser.setEmail(email);
         }
 
@@ -232,27 +284,64 @@ public class UserService {
             if (updatedUser.getEnabled() == null) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Enabled must be true or false");
             }
-            User actor = userRepository.findByEmailIgnoreCase(actorEmail)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Admin user not found"));
             if (!updatedUser.getEnabled() && Objects.equals(actor.getId(), existingUser.getId())) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admins cannot disable their own account");
             }
+            if (!updatedUser.getEnabled() && existingUser.isEnabled()) {
+                projectTeamProvisioningService.validateUserDeactivation(existingUser.getId());
+            }
+            if (existingUser.isEnabled() != updatedUser.getEnabled()) changedFields.add("enabled");
             existingUser.setEnabled(updatedUser.getEnabled());
         }
 
+        User saved;
         try {
-            return userRepository.saveAndFlush(existingUser);
+            saved = userRepository.saveAndFlush(existingUser);
         } catch (DataIntegrityViolationException exception) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email is already registered");
         }
+        if (wasRecoveryCapability && !adminRecoveryCapability.hasCapability(saved)) {
+            adminRecoveryGuard.requireRecoveryAccount();
+        }
+        if (!changedFields.isEmpty()) {
+            auditLogService.createLog("USER_UPDATED", "targetType=USER; targetId=" + id
+                    + "; updatedFields=" + String.join(",", changedFields), null, actor.getId());
+        }
+        return saved;
     }
 
+    @Transactional
     public void deleteUser(Long id) {
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+            "An authenticated user-management actor is required to delete accounts");
+    }
 
-        if (!userRepository.existsById(id)) {
-            throw new RuntimeException("User not found");
+    @Transactional
+    public void deleteUser(Long id, String actorEmail) {
+        if (actorEmail == null || actorEmail.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "An authenticated user-management actor is required to delete accounts");
         }
-
-        userRepository.deleteById(id);
+        // User deletion can remove a recovery account; serialize before loading it so no stale
+        // account state is used to decide whether the last recovery-capable account may be removed.
+        adminRecoveryGuard.lockInvariant();
+        effectivePermissionService.require(actorEmail, "USER_MANAGE", null, null);
+        User target = userRepository.findById(id)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+        Long actorId = actorEmail == null ? null : auditLogService.findActorId(actorEmail);
+        if (actorId != null && Objects.equals(actorId, target.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Administrators cannot delete their own account");
+        }
+        if (adminRecoveryCapability.hasCapability(target)) {
+            userRepository.deleteById(id);
+            userRepository.flush();
+            adminRecoveryGuard.requireRecoveryAccount();
+        } else {
+            userRepository.deleteById(id);
+        }
+        if (actorId != null) {
+            auditLogService.createLog("USER_DELETED", "targetType=USER; targetId=" + id + "; account deleted",
+                    null, actorId);
+        }
     }
 }
