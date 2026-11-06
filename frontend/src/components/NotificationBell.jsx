@@ -22,6 +22,26 @@ function NotificationBell() {
     const navigate = useNavigate();
     const seenKeys = useRef(new Set());
     const countRequest = useRef(0);
+    const controlRef = useRef(null);
+
+    useEffect(() => {
+        if (!open) return undefined;
+
+        const control = controlRef.current;
+        const closeWhenOutside = event => {
+            if (control && !control.contains(event.target)) setOpen(false);
+        };
+        const closeWhenScrolledOutside = event => {
+            if (!control || !control.contains(event.target)) setOpen(false);
+        };
+
+        document.addEventListener("pointerdown", closeWhenOutside);
+        window.addEventListener("scroll", closeWhenScrolledOutside, true);
+        return () => {
+            document.removeEventListener("pointerdown", closeWhenOutside);
+            window.removeEventListener("scroll", closeWhenScrolledOutside, true);
+        };
+    }, [open]);
 
     const refreshUnreadCount = useCallback(async () => {
         const requestId = ++countRequest.current;
@@ -141,9 +161,9 @@ function NotificationBell() {
     };
 
     return (
-        <div className="dfx-notification-control relative">
+        <div ref={controlRef} className="dfx-notification-control relative">
             <button
-                onClick={() => setOpen(!open)}
+                onClick={() => setOpen(value => !value)}
                 aria-label="Notifications" aria-expanded={open} className="dfx-notification-trigger relative rounded-lg p-2 text-gray-300 hover:bg-gray-800 hover:text-white"
             >
                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="h-5 w-5"><path strokeLinecap="round" strokeLinejoin="round" d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
